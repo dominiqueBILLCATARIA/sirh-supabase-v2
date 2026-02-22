@@ -1401,20 +1401,18 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
 
 
 
-
-
-// ============================================================
-        // 10. GÉNÉRATEUR DE RAPPORTS (AMPLITUDE PREMIER IN -> DERNIER OUT) ✅
-        // ============================================================
   // ============================================================
         // 10. GÉNÉRATEUR DE RAPPORTS (AMPLITUDE + FIX LOGIQUE ADMIN) ✅
         // ============================================================
+// ============================================================
+        // 10. GÉNÉRATEUR DE RAPPORTS (AMPLITUDE + SÉCURITÉ ADMIN) ✅
+        // ============================================================
         else if (action === 'read-report') {
-            // --- CORRECTION MAJEURE : On détecte le mode explicitement ---
+            // 1. DÉTECTION DU MODE ET DU CONTEXTE
             const isGlobalMode = req.query.mode === 'GLOBAL';
             const isPersonalMode = req.query.mode === 'PERSONAL';
             
-            // SÉCURITÉ SaaS : Si mode Global mais pas de droit dashboard -> Dehors
+            // SÉCURITÉ : Pour voir le global, il faut le droit Dashboard
             if (isGlobalMode && !checkPerm(req, 'can_see_dashboard')) {
                 return res.status(403).json({ error: "Accès refusé aux rapports globaux" });
             }
@@ -1424,21 +1422,25 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
             const todayStr = now.toISOString().split('T')[0];
 
             try {
-                // 2. PRÉPARATION DE LA REQUÊTE AVEC JONCTION FILTRANTE
+                // 2. PRÉPARATION DE LA REQUÊTE AVEC LES INFOS EMPLOYÉS
                 let query = supabase
                     .from('pointages')
                     .select('*, employees!inner(nom, hierarchy_path, departement)');
 
-                // --- 3. LOGIQUE DE FILTRAGE CORRIGÉE ---
+                // 3. LOGIQUE DE FILTRAGE (QUI VOIT QUOI)
                 if (isPersonalMode) {
-                    // Cas : Je veux MA propre performance
+                    // L'utilisateur ne voit que ses propres données
                     query = query.eq('employee_id', req.user.emp_id);
                 } 
                 else if (isGlobalMode) {
-                    // Cas : Je veux voir les autres (Admin / RH / Manager)
-                    
-                    // Si je n'ai pas le droit de voir TOUT le monde (RH/ADMIN), je suis limité à ma lignée
-                    if (!checkPerm(req, 'can_see_employees')) {
+                    // --- PROTECTION ET POUVOIR ADMIN ---
+                    // Si l'utilisateur a le droit de voir tous les employés (ADMIN / RH)
+                    if (checkPerm(req, 'can_see_employees')) {
+                        console.log(`👑 ADMIN [${req.user.nom}] accède au rapport global.`);
+                        // AUCUN FILTRE SUPPLÉMENTAIRE : L'Admin voit tout.
+                    } 
+                    // Si c'est un simple MANAGER, on filtre par sa lignée
+                    else {
                         const { data: requester } = await supabase.from('employees')
                             .select('hierarchy_path, management_scope')
                             .eq('id', req.user.emp_id)
@@ -1456,10 +1458,9 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                             query = query.or(securityConditions.join(','));
                         }
                     }
-                    // Note : Si can_see_employees est TRUE, aucun filtre n'est ajouté, l'Admin voit TOUT.
                 }
 
-                // 4. FILTRAGE PAR PÉRIODE (Inchangé)
+                // 4. FILTRAGE PAR PÉRIODE
                 if (period === 'today') {
                     query = query.gte('heure', `${todayStr}T00:00:00`).lte('heure', `${todayStr}T23:59:59`);
                 } else {
@@ -1470,7 +1471,7 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                 const { data: pointages, error } = await query.order('heure', { ascending: true });
                 if (error) throw error;
 
-                // --- RENDU AUJOURD'HUI (Inchangé) ---
+                // --- RENDU : AUJOURD'HUI (LISTE DES PRÉSENTS) ---
                 if (period === 'today') {
                     const firstInMap = {};
                     (pointages || []).forEach(p => {
@@ -1488,10 +1489,9 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                     return res.json(report);
                 } 
                 
-                // --- RENDU MENSUEL (Amplitude : Inchangé) ---
+                // --- RENDU : MENSUEL (CALCUL D'AMPLITUDE) ---
                 else {
                     const dailyStats = {};
-                    
                     (pointages || []).forEach(p => {
                         const empId = p.employee_id;
                         const localDate = new Date(p.heure).toLocaleDateString('fr-CA'); 
@@ -1502,15 +1502,10 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                         }
 
                         const time = new Date(p.heure).getTime();
-
                         if (p.action === 'CLOCK_IN') {
-                            if (!dailyStats[groupKey].firstIn || time < dailyStats[groupKey].firstIn) {
-                                dailyStats[groupKey].firstIn = time;
-                            }
+                            if (!dailyStats[groupKey].firstIn || time < dailyStats[groupKey].firstIn) dailyStats[groupKey].firstIn = time;
                         } else if (p.action === 'CLOCK_OUT') {
-                            if (!dailyStats[groupKey].lastOut || time > dailyStats[groupKey].lastOut) {
-                                dailyStats[groupKey].lastOut = time;
-                            }
+                            if (!dailyStats[groupKey].lastOut || time > dailyStats[groupKey].lastOut) dailyStats[groupKey].lastOut = time;
                         }
                     });
 
@@ -1545,9 +1540,10 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                 console.error("Erreur Rapport:", err.message);
                 return res.status(500).json({ error: err.message });
             }
-        }      
+        }
 
-        
+
+            
    else if (action === 'ingest-candidate') {
             const b = req.body;
             console.log(`📥 Candidature reçue. Nom : ${b.nom_complet}`);
@@ -3790,6 +3786,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
