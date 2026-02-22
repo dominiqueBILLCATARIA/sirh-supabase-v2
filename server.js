@@ -1402,20 +1402,21 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
 
 
 
-            
-        // ============================================================
-        // 10. GÉNÉRATEUR DE RAPPORTS (CORRIGÉ COLONNE 'HEURE') ✅
-        // ============================================================
+
 // ============================================================
         // 10. GÉNÉRATEUR DE RAPPORTS (AMPLITUDE PREMIER IN -> DERNIER OUT) ✅
         // ============================================================
+  // ============================================================
+        // 10. GÉNÉRATEUR DE RAPPORTS (AMPLITUDE + FIX LOGIQUE ADMIN) ✅
+        // ============================================================
         else if (action === 'read-report') {
-            // 1. IDENTIFICATION DU CONTEXTE
-            const isPersonalReport = String(req.query.requester_id) === String(req.user.emp_id);
+            // --- CORRECTION MAJEURE : On détecte le mode explicitement ---
+            const isGlobalMode = req.query.mode === 'GLOBAL';
+            const isPersonalMode = req.query.mode === 'PERSONAL';
             
-            // SÉCURITÉ SaaS : Si pas perso et pas de droit dashboard -> Dehors
-            if (!isPersonalReport && !checkPerm(req, 'can_see_dashboard')) {
-                return res.status(403).json({ error: "Accès refusé aux rapports" });
+            // SÉCURITÉ SaaS : Si mode Global mais pas de droit dashboard -> Dehors
+            if (isGlobalMode && !checkPerm(req, 'can_see_dashboard')) {
+                return res.status(403).json({ error: "Accès refusé aux rapports globaux" });
             }
             
             const { period } = req.query;
@@ -1428,30 +1429,37 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                     .from('pointages')
                     .select('*, employees!inner(nom, hierarchy_path, departement)');
 
-                // 3. LOGIQUE DE SILO (HIÉRARCHIE)
-                if (isPersonalReport) {
+                // --- 3. LOGIQUE DE FILTRAGE CORRIGÉE ---
+                if (isPersonalMode) {
+                    // Cas : Je veux MA propre performance
                     query = query.eq('employee_id', req.user.emp_id);
                 } 
-                else if (!checkPerm(req, 'can_see_employees')) {
-                    const { data: requester } = await supabase.from('employees')
-                        .select('hierarchy_path, management_scope')
-                        .eq('id', req.user.emp_id)
-                        .single();
+                else if (isGlobalMode) {
+                    // Cas : Je veux voir les autres (Admin / RH / Manager)
+                    
+                    // Si je n'ai pas le droit de voir TOUT le monde (RH/ADMIN), je suis limité à ma lignée
+                    if (!checkPerm(req, 'can_see_employees')) {
+                        const { data: requester } = await supabase.from('employees')
+                            .select('hierarchy_path, management_scope')
+                            .eq('id', req.user.emp_id)
+                            .single();
 
-                    if (requester) {
-                        let securityConditions = [];
-                        securityConditions.push(`employees.hierarchy_path.eq.${requester.hierarchy_path}`);
-                        securityConditions.push(`employees.hierarchy_path.ilike.${requester.hierarchy_path}/%`);
+                        if (requester) {
+                            let securityConditions = [];
+                            securityConditions.push(`employees.hierarchy_path.eq.${requester.hierarchy_path}`);
+                            securityConditions.push(`employees.hierarchy_path.ilike.${requester.hierarchy_path}/%`);
 
-                        if (requester.management_scope?.length > 0) {
-                            const scopeList = `(${requester.management_scope.map(s => `"${s}"`).join(',')})`;
-                            securityConditions.push(`employees.departement.in.${scopeList}`);
+                            if (requester.management_scope?.length > 0) {
+                                const scopeList = `(${requester.management_scope.map(s => `"${s}"`).join(',')})`;
+                                securityConditions.push(`employees.departement.in.${scopeList}`);
+                            }
+                            query = query.or(securityConditions.join(','));
                         }
-                        query = query.or(securityConditions.join(','));
                     }
+                    // Note : Si can_see_employees est TRUE, aucun filtre n'est ajouté, l'Admin voit TOUT.
                 }
 
-                // 4. FILTRAGE PAR PÉRIODE
+                // 4. FILTRAGE PAR PÉRIODE (Inchangé)
                 if (period === 'today') {
                     query = query.gte('heure', `${todayStr}T00:00:00`).lte('heure', `${todayStr}T23:59:59`);
                 } else {
@@ -1462,7 +1470,7 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                 const { data: pointages, error } = await query.order('heure', { ascending: true });
                 if (error) throw error;
 
-                // --- RENDU AUJOURD'HUI (Liste des présents) ---
+                // --- RENDU AUJOURD'HUI (Inchangé) ---
                 if (period === 'today') {
                     const firstInMap = {};
                     (pointages || []).forEach(p => {
@@ -1480,34 +1488,26 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                     return res.json(report);
                 } 
                 
-                // --- RENDU MENSUEL (Calcul d'Amplitude par jour) ---
+                // --- RENDU MENSUEL (Amplitude : Inchangé) ---
                 else {
                     const dailyStats = {};
                     
                     (pointages || []).forEach(p => {
                         const empId = p.employee_id;
-                        // On convertit la date en local pour grouper par vraie journée
                         const localDate = new Date(p.heure).toLocaleDateString('fr-CA'); 
                         const groupKey = `${empId}_${localDate}`;
 
                         if (!dailyStats[groupKey]) {
-                            dailyStats[groupKey] = {
-                                empId: empId,
-                                nom: p.employees?.nom || "Inconnu",
-                                firstIn: null,  // La première entrée de CE jour
-                                lastOut: null   // La dernière sortie de CE jour
-                            };
+                            dailyStats[groupKey] = { empId, nom: p.employees?.nom || "Inconnu", firstIn: null, lastOut: null };
                         }
 
-                        const time = new Date(p.heure).getTime(); // On travaille en millisecondes pour le calcul
+                        const time = new Date(p.heure).getTime();
 
                         if (p.action === 'CLOCK_IN') {
-                            // Si on n'a pas encore d'entrée, ou si cette entrée est PLUS TÔT, on l'enregistre
                             if (!dailyStats[groupKey].firstIn || time < dailyStats[groupKey].firstIn) {
                                 dailyStats[groupKey].firstIn = time;
                             }
                         } else if (p.action === 'CLOCK_OUT') {
-                            // Si on n'a pas encore de sortie, ou si cette sortie est PLUS TARD, on l'enregistre
                             if (!dailyStats[groupKey].lastOut || time > dailyStats[groupKey].lastOut) {
                                 dailyStats[groupKey].lastOut = time;
                             }
@@ -1515,37 +1515,25 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                     });
 
                     const monthlySummary = {};
-                    
                     Object.values(dailyStats).forEach(day => {
                         if (!monthlySummary[day.empId]) {
                             monthlySummary[day.empId] = { nom: day.nom, totalMs: 0, joursPresence: 0 };
                         }
-                        
-                        // Si l'agent est entré au moins une fois, c'est un jour de présence
-                        if (day.firstIn) {
-                            monthlySummary[day.empId].joursPresence += 1;
-                        }
-                        
-                        // CALCUL DE L'AMPLITUDE DU JOUR : Dernière Sortie - Première Entrée
+                        if (day.firstIn) monthlySummary[day.empId].joursPresence += 1;
                         if (day.firstIn && day.lastOut) {
                             const amplitudeMs = day.lastOut - day.firstIn;
-                            if (amplitudeMs > 0) {
-                                monthlySummary[day.empId].totalMs += amplitudeMs;
-                            }
+                            if (amplitudeMs > 0) monthlySummary[day.empId].totalMs += amplitudeMs;
                         }
                     });
 
-                    // Formatage final (Conversion des millisecondes en Heures/Minutes)
                     const finalReport = Object.values(monthlySummary).map(s => {
                         const totalMinutes = Math.floor(s.totalMs / (1000 * 60));
                         const hours = Math.floor(totalMinutes / 60);
                         const mins = totalMinutes % 60;
-                        
                         return {
                             mois: now.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
                             nom: s.nom,
                             jours: s.joursPresence,
-                            // Affichage propre ex: "145h 30m"
                             heures: `${hours}h ${mins.toString().padStart(2, '0')}m`,
                             Statut: "Clôturé"
                         };
@@ -1557,9 +1545,7 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                 console.error("Erreur Rapport:", err.message);
                 return res.status(500).json({ error: err.message });
             }
-        }
-
-                
+        }      
 
         
    else if (action === 'ingest-candidate') {
@@ -3804,6 +3790,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
