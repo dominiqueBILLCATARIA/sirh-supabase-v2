@@ -3680,7 +3680,7 @@ else if (action === 'get-dashboard-stats') {
 
 
 
-    // ============================================================
+// ============================================================
 // JOB D'ARCHIVAGE AUTOMATIQUE (Maintenance Long Terme)
 // ============================================================
 else if (action === 'run-archiving-job') {
@@ -3804,6 +3804,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
