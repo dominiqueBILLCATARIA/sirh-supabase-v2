@@ -3442,14 +3442,15 @@ else if (action === 'read-visit-reports') {
         const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
 
-        // 1. Initialisation de la requête
-        let query = supabase
-            .from('visit_reports')
-            .select(`
-                *,
-                employees:employee_id (nom),
-                mobile_locations:location_id (name)
-            `, { count: 'exact' });
+    // 1. Initialisation de la requête
+            let query = supabase
+                .from('visit_reports')
+                .select(`
+                    *,
+                    employees:employee_id (nom),
+                    mobile_locations:location_id (name),
+                    prescripteurs:prescripteur_id (nom_complet, fonction) 
+                `, { count: 'exact' });
 
         // --- CORRECTION : FILTRE DE SÉCURITÉ POUR LE PROFIL PERSONNEL ---
         // Si l'utilisateur n'est pas Admin, RH ou Manager, il ne peut voir que SES rapports
@@ -3468,19 +3469,35 @@ else if (action === 'read-visit-reports') {
 
         if (error) throw error;
 
-        const cleanData = data.map(v => ({
-            id: v.id,
-            employee_id: v.employee_id,
-            nom_agent: v.employees?.nom || "Agent inconnu",
-            lieu_nom: v.location_name || v.mobile_locations?.name || "Lieu inconnu",
-            check_in: v.check_in_time,
-            check_out: v.check_out_time,
-            outcome: v.outcome,
-            duration: v.duration_minutes, 
-            notes: v.notes,
-            proof_url: v.proof_url,
-            presented_products: v.presented_products 
-        }));
+            const cleanData = data.map(v => {
+            // Logique intelligente pour le nom du contact (S'il est dans la base ou tapé à la main)
+            let doctorName = "Contact non précisé";
+            let doctorRole = "";
+            
+            if (v.prescripteurs && v.prescripteurs.nom_complet) {
+                doctorName = v.prescripteurs.nom_complet;
+                doctorRole = v.prescripteurs.fonction || "Professionnel de santé";
+            } else if (v.contact_nom_libre) {
+                doctorName = v.contact_nom_libre;
+                doctorRole = "Nouveau contact (Non répertorié)";
+            }
+
+            return {
+                id: v.id,
+                employee_id: v.employee_id,
+                nom_agent: v.employees?.nom || "Agent inconnu",
+                lieu_nom: v.location_name || v.mobile_locations?.name || "Lieu inconnu",
+                contact_nom: doctorName,      
+                contact_role: doctorRole,      
+                check_in: v.check_in_time,
+                check_out: v.check_out_time,
+                outcome: v.outcome,
+                duration: v.duration_minutes, 
+                notes: v.notes,
+                proof_url: v.proof_url,
+                presented_products: v.presented_products 
+            };
+        });
 
         // On renvoie les données ET les infos de pagination
         return res.json({
@@ -3497,9 +3514,6 @@ else if (action === 'read-visit-reports') {
         return res.status(500).json({ error: err.message });
     }
 }
-
-
-
 
 
     
@@ -3808,6 +3822,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
