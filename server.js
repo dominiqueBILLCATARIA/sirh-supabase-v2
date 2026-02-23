@@ -2230,7 +2230,15 @@ else if (action === 'submit-daily-report') {
 
 
 
-
+            else if (action === 'read-config-salaries') {
+                const { data, error } = await supabase
+                    .from('salaries_config')
+                    .select('*')
+                    .eq('is_active', true);
+            
+                if (error) throw error;
+                return res.json(data);
+            }
 
 
             else if (action === 'get-performance-report') {
@@ -2785,120 +2793,126 @@ else if (action === 'process-payroll') {
             // Formatage des montants pour le design (ex: 1 500 000 CFA)
             const fmt = (val) => new Intl.NumberFormat('fr-FR').format(val || 0) + " CFA";
 
-            const htmlSlip = `
-            <!DOCTYPE html>
-            <html lang="fr">
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    @page { size: A4; margin: 0; }
-                    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #1e293b; margin: 0; padding: 0; background: #fff; }
-                    .page { width: 210mm; min-height: 297mm; padding: 20mm; margin: auto; position: relative; box-sizing: border-box; }
-                    
-                    /* Header */
-                    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 4px solid #0f172a; padding-bottom: 20px; margin-bottom: 30px; }
-                    .logo-box { font-size: 26px; font-weight: 900; color: #0f172a; letter-spacing: -1px; }
-                    .title-box { text-align: right; }
-                    .title-box h1 { margin: 0; font-size: 18px; color: #2563eb; text-transform: uppercase; letter-spacing: 2px; }
-                    .title-box p { margin: 5px 0 0; font-size: 10px; color: #64748b; font-weight: bold; }
+// Dans server.js, boucle record of payrollRecords
+const cnssPart = Math.round(record.salaire_base * (record.taux_cnss / 100));
+const irppPart = record.retenues - cnssPart; // On déduit l'IRPP du reste des retenues
 
-                    /* Info Grid */
-                    .info-section { display: flex; gap: 20px; margin-bottom: 40px; }
-                    .info-card { flex: 1; border: 1px solid #e2e8f0; border-radius: 12px; padding: 15px; background: #f8fafc; }
-                    .label { font-size: 9px; color: #64748b; text-transform: uppercase; font-weight: 800; margin-bottom: 6px; display: block; }
-                    .value { font-size: 13px; font-weight: 700; color: #0f172a; }
+const htmlSlip = `
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @page { size: A4; margin: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1e293b; margin: 0; padding: 0; }
+        .page { width: 210mm; min-height: 297mm; padding: 15mm; margin: auto; box-sizing: border-box; }
+        
+        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #334155; padding-bottom: 10px; margin-bottom: 20px; }
+        .logo-box { font-size: 24px; font-weight: 800; color: #0f172a; }
+        .title-box { text-align: right; }
+        
+        .info-grid { display: flex; gap: 10px; margin-bottom: 20px; }
+        .info-card { flex: 1; border: 1px solid #e2e8f0; padding: 10px; border-radius: 8px; font-size: 11px; }
+        .label { font-size: 8px; color: #64748b; text-transform: uppercase; font-weight: bold; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
+        th { background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; text-align: left; }
+        td { border: 1px solid #e2e8f0; padding: 8px; }
+        
+        .row-total { background: #f1f5f9; font-weight: bold; }
+        .net-box { margin-top: 20px; background: #2563eb; color: white; padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .net-amount { font-size: 22px; font-weight: 900; }
+        .footer { font-size: 9px; color: #94a3b8; text-align: center; margin-top: 30px; border-top: 1px solid #f1f5f9; padding-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="header">
+            <div class="logo-box">SIRH SECURE</div>
+            <div class="title-box">
+                <h2 style="margin:0; font-size:16px;">BULLETIN DE PAIE</h2>
+                <p style="margin:0; font-size:10px;">Période : ${record.mois} ${record.annee}</p>
+            </div>
+        </div>
 
-                    /* Table */
-                    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-                    th { background: #0f172a; color: white; padding: 12px 15px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-                    td { padding: 15px; border-bottom: 1px solid #f1f5f9; font-size: 12px; color: #334155; }
-                    .text-right { text-align: right; }
-                    .positive { color: #10b981; font-weight: 700; }
-                    .negative { color: #ef4444; font-weight: 700; }
+        <div class="info-grid">
+            <div class="info-card">
+                <span class="label">Employeur</span><br>
+                <strong>SIRH-SECURE SOLUTIONS</strong><br>Cotonou, Bénin
+            </div>
+            <div class="info-card">
+                <span class="label">Salarié</span><br>
+                <strong>${record.nom}</strong><br>
+                Matricule: ${record.matricule}<br>
+                Poste: ${record.poste}
+            </div>
+        </div>
 
-                    /* Net à payer */
-                    .total-container { margin-top: 30px; background: #2563eb; border-radius: 12px; padding: 25px; color: white; display: flex; justify-content: space-between; align-items: center; }
-                    .total-label { font-size: 16px; font-weight: 800; text-transform: uppercase; }
-                    .total-amount { font-size: 28px; font-weight: 900; }
+        <table>
+            <thead>
+                <tr>
+                    <th>Désignation</th>
+                    <th>Base / Taux</th>
+                    <th style="text-align:right">Gains</th>
+                    <th style="text-align:right">Retenues</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- GAINS -->
+                <tr>
+                    <td>Salaire de base</td>
+                    <td>100%</td>
+                    <td style="text-align:right">${fmt(record.salaire_base)}</td>
+                    <td></td>
+                </tr>
+                <tr>
+                    <td>Indemnités contractuelles (Logement/Transp.)</td>
+                    <td>Fixe</td>
+                    <td style="text-align:right">${fmt(record.indemnites_fixes)}</td>
+                    <td></td>
+                </tr>
+                <tr>
+                    <td>Primes et gratifications</td>
+                    <td>Variable</td>
+                    <td style="text-align:right">${fmt(record.primes)}</td>
+                    <td></td>
+                </tr>
+                
+                <!-- RETENUES EXPLICITES -->
+                <tr>
+                    <td>Cotisation Sociale (CNSS)</td>
+                    <td>${record.taux_cnss}%</td>
+                    <td></td>
+                    <td style="text-align:right">${fmt(cnssPart)}</td>
+                </tr>
+                <tr>
+                    <td>Impôt sur le Revenu (IRPP)</td>
+                    <td>${record.taux_irpp}% (est.)</td>
+                    <td></td>
+                    <td style="text-align:right">${fmt(irppPart)}</td>
+                </tr>
 
-                    /* Footer */
-                    .footer { position: absolute; bottom: 20mm; left: 20mm; right: 20mm; text-align: center; border-top: 1px solid #f1f5f9; padding-top: 20px; font-size: 10px; color: #94a3b8; line-height: 1.5; }
-                </style>
-            </head>
-            <body>
-                <div class="page">
-                    <div class="header">
-                        <div class="logo-box">SIRH SECURE</div>
-                        <div class="title-box">
-                            <h1>Bulletin de Paie</h1>
-                            <p>Document confidentiel • Réf: ${record.id.substring(0,8)}</p>
-                        </div>
-                    </div>
+                <tr class="row-total">
+                    <td>TOTAUX</td>
+                    <td></td>
+                    <td style="text-align:right">${fmt(record.salaire_base + record.indemnites_fixes + record.primes)}</td>
+                    <td style="text-align:right">${fmt(record.retenues)}</td>
+                </tr>
+            </tbody>
+        </table>
 
-                    <div class="info-section">
-                        <div class="info-card">
-                            <span class="label">Employeur</span>
-                            <div class="value">SIRH-SECURE SOLUTIONS SA</div>
-                            <div style="font-size: 10px; color: #64748b; margin-top:4px;">Cotonou, Bénin • Direction Comptable</div>
-                        </div>
-                        <div class="info-card">
-                            <span class="label">Salarié</span>
-                            <div class="value">${record.nom}</div>
-                            <div style="font-size: 11px; color: #2563eb; font-weight: 600; margin-top:4px;">${record.poste}</div>
-                        </div>
-                    </div>
+        <div class="net-box">
+            <span style="font-weight:bold; text-transform:uppercase;">Net à percevoir</span>
+            <span class="net-amount">${fmt(record.salaire_net)}</span>
+        </div>
 
-                    <div class="info-section" style="margin-bottom: 20px;">
-                        <div class="info-card" style="background: white;">
-                            <span class="label">Période de paie</span>
-                            <div class="value">${record.mois} ${record.annee}</div>
-                        </div>
-                        <div class="info-card" style="background: white;">
-                            <span class="label">Matricule Officiel</span>
-                            <div class="value">${record.matricule || 'N/A'}</div>
-                        </div>
-                    </div>
-
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Désignation des éléments de salaire</th>
-                                <th class="text-right">Gains (+)</th>
-                                <th class="text-right">Retenues (-)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>Salaire de base contractuel</td>
-                                <td class="text-right">${fmt(record.salaire_base)}</td>
-                                <td class="text-right">-</td>
-                            </tr>
-                            <tr>
-                                <td>Primes, gratifications et indemnités</td>
-                                <td class="text-right positive">+ ${fmt(record.primes)}</td>
-                                <td class="text-right">-</td>
-                            </tr>
-                            <tr>
-                                <td>Taxes, IRPP et cotisations sociales</td>
-                                <td class="text-right">-</td>
-                                <td class="text-right negative">- ${fmt(record.retenues)}</td>
-                            </tr>
-                        </tbody>
-                    </table>
-
-                    <div class="total-container">
-                        <div class="total-label">Net à percevoir</div>
-                        <div class="total-amount">${fmt(record.salaire_net)}</div>
-                    </div>
-
-                    <div class="footer">
-                        Fait à Cotonou, le ${new Date().toLocaleDateString('fr-FR')}<br>
-                        Ce bulletin de paie est certifié conforme et vaut reçu de paiement.<br>
-                        <strong>SIRH-SECURE - La digitalisation au service de l'excellence RH.</strong>
-                    </div>
-                </div>
-            </body>
-            </html>`;
+        <div class="footer">
+            Bulletin de paie numérique généré le ${new Date().toLocaleDateString('fr-FR')}<br>
+            Pour faire valoir ce que de droit.
+        </div>
+    </div>
+</body>
+</html>`;
 
             // 2. CONVERSION VECTORIELLE (HTML -> PDF via LibreOffice)
             const htmlBuffer = Buffer.from(htmlSlip, 'utf-8');
@@ -3897,6 +3911,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
