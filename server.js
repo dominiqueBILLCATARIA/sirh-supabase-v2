@@ -852,13 +852,11 @@ Ceci est un message pour la protection de vos accès, un message est aussi envoy
 
 // --- LISTER LES MODÈLES (Pour le formulaire d'embauche) ---
 else if (action === 'list-templates') {
-    // On autorise RH, ADMIN et MANAGER à voir la liste pour choisir
-    if (!checkPerm(req, 'can_see_employees')) return res.status(403).json({ error: "Accès refusé." });
-    
     const { data, error } = await supabase
         .from('contract_templates')
         .select('*')
-        .eq('is_active', true);
+        .eq('is_active', true) // <--- Crucial : on ne propose que les modèles actuels
+        .order('label', { ascending: true });
 
     if (error) throw error;
     return res.json(data);
@@ -1940,173 +1938,137 @@ else if (action === 'list-roles') {
      // ============================================================
         // 15. POINTAGE (CORRIGÉ : SYNC HORS-LIGNE & SÉCURITÉ FIXES) ✅
         // ============================================================
-        else if (action === 'clock') {
-
-            if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit : Vous n'avez pas l'autorisation de pointer." });
+            else if (action === 'clock') {
+            if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit" });
             
-            // 1. RÉCUPÉRATION DE L'HEURE RÉELLE (Celle du téléphone, pas celle du serveur)
-            const { id, action: clockAction, gps, ip, outcome, report, is_last_exit, presentedProducts, time, schedule_id, forced_location_id } = req.body;
+            // 1. RÉCUPÉRATION DE TOUTES LES VARIABLES
+            const { 
+                id, action: clockAction, gps, ip, outcome, report, 
+                is_last_exit, presentedProducts, time, 
+                schedule_id, forced_location_id, 
+                prescripteur_id, contact_nom_libre 
+            } = req.body;
             
-            // Si 'time' est envoyé (mode hors ligne), on l'utilise. Sinon on prend l'heure actuelle.
             const eventTime = time ? new Date(time) : new Date();
             const today = eventTime.toISOString().split('T')[0];
-
             const [userLat, userLon] = gps.split(',').map(parseFloat);
             
             let proofUrl = null;
 
-            // 2. GESTION PHOTO (Multer) - Inchangé
+            // Gestion photo (Multer)
             if (req.files && req.files.length > 0) {
                 const file = req.files.find(f => f.fieldname === 'proof_photo');
                 if (file) {
                     const fileName = `visite_proof_${id}_${Date.now()}.jpg`;
-                    const { error: upErr } = await supabase.storage
-                        .from('documents')
-                        .upload(fileName, file.buffer, { contentType: file.mimetype });
-                    
-                    if (!upErr) {
-                        const { data } = supabase.storage.from('documents').getPublicUrl(fileName);
-                        proofUrl = data.publicUrl;
-                    }
+                    const { error: upErr } = await supabase.storage.from('documents').upload(fileName, file.buffer, { contentType: file.mimetype });
+                    if (!upErr) proofUrl = supabase.storage.from('documents').getPublicUrl(fileName).data.publicUrl;
                 }
             }
 
             try {
-                // 3. RÉCUPÉRATION DU PROFIL
                 const { data: emp } = await supabase.from('employees').select('employee_type').eq('id', id).single();
                 const isMobileAgent = (emp && emp.employee_type === 'MOBILE');
 
-                // --- SÉCURITÉ FIXES : BLOCAGE DOUBLE POINTAGE (NOUVEAU) ---
+                // --- SÉCURITÉ FIXES : BLOCAGE DOUBLE POINTAGE ---
                 if (!isMobileAgent) {
-                    const { data: existing } = await supabase.from('pointages')
-                        .select('action')
-                        .eq('employee_id', id)
-                        .gte('heure', `${today}T00:00:00`); // On vérifie sur la date de l'événement
-
-                    if (clockAction === 'CLOCK_IN' && existing.some(p => p.action === 'CLOCK_IN')) {
-                        return res.status(403).json({ error: "Entrée déjà enregistrée pour cette date." });
-                    }
-                    if (clockAction === 'CLOCK_OUT' && existing.some(p => p.action === 'CLOCK_OUT')) {
-                        return res.status(403).json({ error: "Sortie déjà enregistrée pour cette date." });
-                    }
+                    const { data: existing } = await supabase.from('pointages').select('action').eq('employee_id', id).gte('heure', `${today}T00:00:00`);
+                    if (clockAction === 'CLOCK_IN' && existing.some(p => p.action === 'CLOCK_IN')) return res.status(403).json({ error: "Entrée déjà validée." });
+                    if (clockAction === 'CLOCK_OUT' && existing.some(p => p.action === 'CLOCK_OUT')) return res.status(403).json({ error: "Sortie déjà validée." });
                 }
-                // ----------------------------------------------------------
 
-                // 4. DÉTECTION GPS - Inchangé
-                const [zonesRes, mobilesRes] = await Promise.all([
-                    supabase.from('zones').select('*').eq('actif', true),
-                    supabase.from('mobile_locations').select('*').eq('is_active', true)
-                ]);
-
-                let allPlaces = [];
-                if (zonesRes.data) zonesRes.data.forEach(z => allPlaces.push({ id: z.id, name: z.nom, lat: z.latitude, lon: z.longitude, radius: z.rayon, table: 'zones' }));
-                if (mobilesRes.data) mobilesRes.data.forEach(m => allPlaces.push({ id: m.id, name: m.name, lat: m.latitude, lon: m.longitude, radius: m.radius, table: 'mobile_locations' }));
-
+                // --- LOGIQUE GPS STRICTE ---
                 let detectedLoc = null;
-                let minDistance = 999999;
-                for (let loc of allPlaces) {
-                    const d = getDistanceInMeters(userLat, userLon, loc.lat, loc.lon);
-                    if (d <= loc.radius && d < minDistance) {
-                        detectedLoc = loc;
-                        minDistance = Math.round(d);
+
+                // A. Si lancé depuis le planning : Vérification forcée du lieu prévu
+                if (forced_location_id && clockAction === 'CLOCK_IN') {
+                    const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
+                    if (loc) {
+                        const dist = getDistanceInMeters(userLat, userLon, loc.latitude, loc.longitude);
+                        if (dist <= loc.radius) {
+                            detectedLoc = { name: loc.name, id: loc.id, table: 'mobile_locations' };
+                        } else {
+                            // ERREUR : L'utilisateur n'est pas au bon endroit
+                            return res.status(403).json({ error: `Échec GPS. Vous êtes à ${Math.round(dist)}m de ${loc.name}. Approchez-vous.` });
+                        }
                     }
                 }
 
-                if (!detectedLoc) return res.status(403).json({ error: "Lieu inconnu. Rapprochez-vous d'un site autorisé." });
+                // B. Si pas de planning ou si c'est une sortie, on cherche le lieu le plus proche
+                if (!detectedLoc) {
+                    const [zonesRes, mobilesRes] = await Promise.all([
+                        supabase.from('zones').select('*').eq('actif', true),
+                        supabase.from('mobile_locations').select('*').eq('is_active', true)
+                    ]);
+                    let allPlaces = [];
+                    if (zonesRes.data) zonesRes.data.forEach(z => allPlaces.push({ id: z.id, name: z.nom, lat: z.latitude, lon: z.longitude, radius: z.rayon, table: 'zones' }));
+                    if (mobilesRes.data) mobilesRes.data.forEach(m => allPlaces.push({ id: m.id, name: m.name, lat: m.latitude, lon: m.longitude, radius: m.radius, table: 'mobile_locations' }));
 
-                // 5. ENREGISTREMENT POINTAGE (Avec l'heure corrigée eventTime)
-                let isFinalOut = false;
-                if (!isMobileAgent && clockAction === 'CLOCK_OUT') isFinalOut = true;
-                if (isMobileAgent && clockAction === 'CLOCK_OUT' && (is_last_exit === 'true' || is_last_exit === true)) isFinalOut = true;
+                    for (let loc of allPlaces) {
+                        const d = getDistanceInMeters(userLat, userLon, loc.lat, loc.lon);
+                        if (d <= loc.radius) {
+                            detectedLoc = loc;
+                            break;
+                        }
+                    }
+                }
 
+                if (!detectedLoc) return res.status(403).json({ error: "Lieu inconnu. Vous n'êtes sur aucun site répertorié." });
+
+                // 2. ENREGISTREMENT POINTAGE
+                const isFinalOut = (clockAction === 'CLOCK_OUT' && (is_last_exit === 'true' || !isMobileAgent));
                 await supabase.from('pointages').insert([{
                     employee_id: id,
                     action: clockAction,
-                    heure: eventTime, // <--- CORRECTION IMPORTANTE (Date du téléphone)
-                    gps_lat: userLat,
-                    gps_lon: userLon,
+                    heure: eventTime,
+                    gps_lat: userLat, gps_lon: userLon,
                     zone_detectee: detectedLoc.name,
                     ip_address: ip,
                     statut: 'Validé',
                     is_final_out: isFinalOut
                 }]);
 
-                // 6. GESTION DU RAPPORT DE VISITE (visit_reports)
+                // 3. GESTION MOBILE (RAPPORT & PLANNING)
                 if (isMobileAgent) {
-                if (clockAction === 'CLOCK_IN') {
+                    if (clockAction === 'CLOCK_IN') {
+                        // Mise à jour de l'agenda si besoin
+                        if (schedule_id) await supabase.from('employee_schedules').update({ status: 'CHECKED_IN' }).eq('id', schedule_id);
                         
-                        // CAS SPÉCIAL : DÉMARRAGE DEPUIS L'AGENDA
-                        if (schedule_id) {
-                            console.log(`📅 Démarrage mission planifiée #${schedule_id}`);
-                            
-                            // 1. On change le statut dans l'agenda (Devient bleu/En cours)
-                            await supabase.from('employee_schedules')
-                                .update({ status: 'CHECKED_IN' }) 
-                                .eq('id', schedule_id);
-                            
-                            // 2. On force le lieu (on fait confiance à l'agenda)
-                            if (forced_location_id) {
-                                const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
-                                if (loc) detectedLoc = { name: loc.name, id: loc.id, table: 'mobile_locations' };
-                            }
-                        }
-
-                        // Enregistrement classique du pointage
-                        const insertData = {
+                        await supabase.from('visit_reports').insert([{
                             employee_id: id,
                             check_in_time: eventTime,
-                            location_name: detectedLoc ? detectedLoc.name : "Lieu Inconnu",
-                            // On garde une trace de quel rdv c'était
-                            schedule_ref_id: schedule_id || null 
-                        };
-                                                
-                        if (detectedLoc.table === 'mobile_locations') {
-                            insertData.location_id = detectedLoc.id;
-                        }
-
-                        const { error: insErr } = await supabase.from('visit_reports').insert([insertData]);
-                        if (insErr) console.error("Erreur Création Rapport:", insErr);
-                        
+                            location_name: detectedLoc.name,
+                            location_id: (detectedLoc.table === 'mobile_locations') ? detectedLoc.id : null,
+                            schedule_ref_id: schedule_id || null
+                        }]);
                         await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', id);
                     } 
                     else {
                         // CLOCK_OUT
                         const { data: lastVisit } = await supabase.from('visit_reports')
                             .select('id, check_in_time')
-                            .eq('employee_id', id)
-                            .is('check_out_time', null)
-                            .order('check_in_time', { ascending: false })
-                            .limit(1)
-                            .maybeSingle();
+                            .eq('employee_id', id).is('check_out_time', null)
+                            .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
 
                         if (lastVisit) {
-                            if (outcome === 'VU' && !proofUrl) {
-                                return res.status(400).json({ error: "📸 La photo du cachet est obligatoire pour valider la visite." });
-                            }
-
-                            // Calcul de la durée avec les vraies heures
-                            const startTime = new Date(lastVisit.check_in_time);
-                            const endTime = eventTime; // <--- CORRECTION IMPORTANTE
-                            const durationMinutes = Math.round((endTime - startTime) / (1000 * 60));
-
-                            const updateData = {
-                                check_out_time: endTime, // <--- CORRECTION IMPORTANTE
-                                outcome: outcome || 'VU', 
+                            const duration = Math.round((eventTime - new Date(lastVisit.check_in_time)) / (1000 * 60));
+                            
+                            const updateReport = {
+                                check_out_time: eventTime,
+                                outcome: outcome || 'VU',
                                 notes: report || '',
                                 proof_url: proofUrl,
-                                duration_minutes: durationMinutes > 0 ? durationMinutes : 1,
+                                duration_minutes: duration > 0 ? duration : 1,
                                 presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || []),
                                 prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre' && prescripteur_id !== '') ? prescripteur_id : null,
                                 contact_nom_libre: contact_nom_libre || null
                             };
 
-                            await supabase.from('visit_reports').update(updateData).eq('id', lastVisit.id);
+                            await supabase.from('visit_reports').update(updateReport).eq('id', lastVisit.id);
 
-                            let finalStatus = "En Poste"; 
                             if (is_last_exit === 'true' || is_last_exit === true) {
-                                finalStatus = "Actif";
+                                await supabase.from('employees').update({ statut: 'Actif' }).eq('id', id);
+                                if (schedule_id) await supabase.from('employee_schedules').update({ status: 'COMPLETED' }).eq('id', schedule_id);
                             }
-                            await supabase.from('employees').update({ statut: finalStatus }).eq('id', id);
                         }
                     }
                 } else {
@@ -2120,9 +2082,6 @@ else if (action === 'list-roles') {
                 return res.status(500).json({ error: err.message });
             }
         }
-
-
-
 
 
            // ============================================================
@@ -2754,31 +2713,19 @@ else if (action === 'write') {
 
 
                       
-
 else if (action === 'delete-template') {
-    // Vérification : Seuls ceux qui gèrent la config peuvent supprimer
-    if (!checkPerm(req, 'can_manage_config')) {
-        return res.status(403).json({ error: "Droits de configuration requis pour supprimer un modèle." });
-    }
-
     const { id } = req.body;
-
-    try {
-        const { error } = await supabase
-            .from('contract_templates')
-            .delete()
-            .eq('id', id);
-
-        if (error) throw error;
-
-        return res.json({ status: "success" });
-    } catch (err) {
-        console.error("Erreur delete-template:", err.message);
-        return res.status(500).json({ error: err.message });
-    }
-}
     
+    // On ne supprime pas (DELETE), on désactive (UPDATE)
+    // Cela permet de garder l'historique pour les anciens employés
+    const { error } = await supabase
+        .from('contract_templates')
+        .update({ is_active: false }) 
+        .eq('id', id);
 
+    if (error) throw error;
+    return res.json({ status: "success", message: "Modèle archivé" });
+}
 
         // ============================================================
         // 6. MODULE DES CONGÉS (NOUVEAU ✅)
@@ -3947,6 +3894,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
