@@ -1726,7 +1726,10 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                 type_contrat: limit === '365' ? 'CDI' : (limit === '180' ? 'CDD' : 'Essai'),
                 date_embauche: start_date,
                 manager_id: manager_id,
-                management_scope: scope
+                management_scope: scope,
+                salaire_brut_fixe: parseFloat(req.query.salaire_brut_fixe) || 0,
+                indemnite_transport: parseFloat(req.query.indemnite_transport) || 0,
+                indemnite_logement: parseFloat(req.query.indemnite_logement) || 0
             };
 
             // Si "Forcer l'initialisation" est coché, on peut aussi reset le solde par exemple
@@ -2363,9 +2366,9 @@ if (!checkPerm(req, 'can_manage_catalog')) return res.status(403).json({ error: 
 
     // --- AJOUTER UN PRESCRIPTEUR (ADMIN/MANAGER) ---
         else if (action === 'add-prescripteur') {
-            if (!req.user.permissions || !req.user.permissions.can_manage_config) {
-                return res.status(403).json({ error: "Accès refusé. Réservé aux managers." });
-            }
+        if (!checkPerm(req, 'can_manage_prescripteurs')) {
+            return res.status(403).json({ error: "Accès refusé : Vous n'êtes pas autorisé à créer des prescripteurs." });
+        }
 
             const { nom_complet, fonction, telephone, location_id } = req.body;
 
@@ -3010,8 +3013,8 @@ else if (action === 'process-payroll') {
 
         // A. Ajouter un nouveau lieu mobile
         else if (action === 'add-mobile-location') {
-            if (!req.user.permissions || !req.user.permissions.can_manage_config) {
-                return res.status(403).json({ error: "Accès refusé à la gestion des lieux mobiles" });
+            if (!checkPerm(req, 'can_manage_prescripteurs')) {
+                return res.status(403).json({ error: "Accès refusé : Vous n'êtes pas autorisé à créer des prescripteurs." });
             }
             const { name, address, latitude, longitude, radius, type_location } = req.body;
             const { data, error } = await supabase.from('mobile_locations').insert([{
@@ -3910,6 +3913,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
