@@ -3079,15 +3079,28 @@ else if (action === 'process-payroll') {
         // GESTION DES PLANNINIGS D'EMPLOYÉS MOBILES ✅
         // ============================================================
 
-        // A. Ajouter un planning pour un employé mobile
+        // A. Ajouter un planning (Auto-planification Délégué OU Assignation Manager)
         else if (action === 'add-schedule') {
-            if (!req.user.permissions || !req.user.permissions.can_see_employees) { // RH/Admin/Manager peut gérer les plannings
-                return res.status(403).json({ error: "Accès refusé à la création de plannings" });
+            // Tout le monde peut planifier (Délégué pour lui-même, Chef pour les autres)
+            
+            const { employee_id, location_id, schedule_date, start_time, end_time, notes, prescripteur_id } = req.body;
+            
+            // SÉCURITÉ : Si je suis un simple employé, je ne peux planifier QUE pour moi-même
+            if (!req.user.permissions.can_see_employees && String(employee_id) !== String(req.user.emp_id)) {
+                return res.status(403).json({ error: "Vous ne pouvez planifier que pour vous-même." });
             }
-            const { employee_id, location_id, schedule_date, start_time, end_time, notes } = req.body;
+
             const { data, error } = await supabase.from('employee_schedules').insert([{
-                employee_id, location_id, schedule_date, start_time, end_time, notes
+                employee_id, 
+                location_id: location_id || null, 
+                prescripteur_id: prescripteur_id || null, // <--- NOUVEAU
+                schedule_date, 
+                start_time, 
+                end_time, 
+                notes,
+                status: 'PENDING' // Statut par défaut : En attente
             }]).select();
+
             if (error) throw error;
             return res.json({ status: "success", data: data[0] });
         }
@@ -3099,9 +3112,14 @@ else if (action === 'process-payroll') {
             const isMobileEmployee = req.user.employee_type && req.user.employee_type !== 'OFFICE';
             const canSeeAllSchedules = req.user.permissions && req.user.permissions.can_see_employees;
 
-            let query = supabase
+                let query = supabase
                 .from('employee_schedules')
-                .select('*, employees(id, nom, matricule, employee_type, poste), mobile_locations(id, name, address, latitude, longitude, radius, type_location)')
+                .select(`
+                    *, 
+                    employees(id, nom, matricule, employee_type, poste), 
+                    mobile_locations(id, name, address, latitude, longitude, radius, type_location),
+                    prescripteurs(id, nom_complet, fonction)
+                `) // <--- J'ai ajouté la liaison avec prescripteurs
                 .order('schedule_date', { ascending: false })
                 .order('start_time', { ascending: true });
 
@@ -3124,6 +3142,8 @@ else if (action === 'process-payroll') {
                 employee_type: s.employees ? s.employees.employee_type : 'N/A',
                 location_id: s.location_id,
                 location_name: s.mobile_locations ? s.mobile_locations.name : 'Lieu Inconnu',
+                prescripteur_nom: s.prescripteurs ? s.prescripteurs.nom_complet : null,
+                prescripteur_fonction: s.prescripteurs ? s.prescripteurs.fonction : null,
                 location_address: s.mobile_locations ? s.mobile_locations.address : 'N/A',
                 location_lat: s.mobile_locations ? s.mobile_locations.latitude : null,
                 location_lon: s.mobile_locations ? s.mobile_locations.longitude : null,
@@ -3151,17 +3171,31 @@ else if (action === 'process-payroll') {
             return res.json({ status: "success", data: data[0] });
         }
 
-        // D. Supprimer un planning
+// D. Supprimer un planning (Manager OU Propriétaire du planning)
         else if (action === 'delete-schedule') {
-            if (!req.user.permissions || !req.user.permissions.can_see_employees) {
-                return res.status(403).json({ error: "Accès refusé à la suppression de plannings" });
-            }
             const { id } = req.body;
+            const currentUserId = req.user.emp_id;
+            const isManager = req.user.permissions && req.user.permissions.can_see_employees;
+
+            // 1. On récupère le planning pour voir à qui il appartient
+            const { data: schedule } = await supabase
+                .from('employee_schedules')
+                .select('employee_id')
+                .eq('id', id)
+                .single();
+
+            if (!schedule) return res.status(404).json({ error: "Mission introuvable" });
+
+            // 2. Vérification : Est-ce que j'ai le droit ?
+            // J'ai le droit SI je suis Manager OU SI c'est mon propre ID
+            if (!isManager && String(schedule.employee_id) !== String(currentUserId)) {
+                return res.status(403).json({ error: "Vous ne pouvez pas supprimer le planning d'un collègue." });
+            }
+
             const { error } = await supabase.from('employee_schedules').delete().eq('id', id);
             if (error) throw error;
             return res.json({ status: "success" });
         }
-
           
 
 else if (action === 'read-payroll') {
@@ -3890,6 +3924,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
