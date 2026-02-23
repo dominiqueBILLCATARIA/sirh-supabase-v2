@@ -1930,10 +1930,6 @@ else if (action === 'list-roles') {
 
            
 
-
-// ============================================================
-        // 15. POINTAGE (CORRIGÉ : DURÉE, SÉCURITÉ PHOTO ET STATUT) ✅
-        // ============================================================
      // ============================================================
         // 15. POINTAGE (CORRIGÉ : SYNC HORS-LIGNE & SÉCURITÉ FIXES) ✅
         // ============================================================
@@ -1942,7 +1938,7 @@ else if (action === 'list-roles') {
             if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit : Vous n'avez pas l'autorisation de pointer." });
             
             // 1. RÉCUPÉRATION DE L'HEURE RÉELLE (Celle du téléphone, pas celle du serveur)
-            const { id, action: clockAction, gps, ip, outcome, report, is_last_exit, presentedProducts, time } = req.body;
+            const { id, action: clockAction, gps, ip, outcome, report, is_last_exit, presentedProducts, time, schedule_id, forced_location_id } = req.body;
             
             // Si 'time' est envoyé (mode hors ligne), on l'utilise. Sinon on prend l'heure actuelle.
             const eventTime = time ? new Date(time) : new Date();
@@ -2030,13 +2026,33 @@ else if (action === 'list-roles') {
 
                 // 6. GESTION DU RAPPORT DE VISITE (visit_reports)
                 if (isMobileAgent) {
-                    if (clockAction === 'CLOCK_IN') {
+                if (clockAction === 'CLOCK_IN') {
+                        
+                        // CAS SPÉCIAL : DÉMARRAGE DEPUIS L'AGENDA
+                        if (schedule_id) {
+                            console.log(`📅 Démarrage mission planifiée #${schedule_id}`);
+                            
+                            // 1. On change le statut dans l'agenda (Devient bleu/En cours)
+                            await supabase.from('employee_schedules')
+                                .update({ status: 'CHECKED_IN' }) 
+                                .eq('id', schedule_id);
+                            
+                            // 2. On force le lieu (on fait confiance à l'agenda)
+                            if (forced_location_id) {
+                                const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
+                                if (loc) detectedLoc = { name: loc.name, id: loc.id, table: 'mobile_locations' };
+                            }
+                        }
+
+                        // Enregistrement classique du pointage
                         const insertData = {
                             employee_id: id,
-                            check_in_time: eventTime, // <--- CORRECTION IMPORTANTE
-                            location_name: detectedLoc.name
+                            check_in_time: eventTime,
+                            location_name: detectedLoc ? detectedLoc.name : "Lieu Inconnu",
+                            // On garde une trace de quel rdv c'était
+                            schedule_ref_id: schedule_id || null 
                         };
-                        
+                                                
                         if (detectedLoc.table === 'mobile_locations') {
                             insertData.location_id = detectedLoc.id;
                         }
@@ -3924,6 +3940,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
