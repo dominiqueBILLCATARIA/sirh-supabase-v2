@@ -2072,7 +2072,9 @@ else if (action === 'list-roles') {
                                 notes: report || '',
                                 proof_url: proofUrl,
                                 duration_minutes: durationMinutes > 0 ? durationMinutes : 1,
-                                presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || [])
+                                presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || []),
+                                prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre' && prescripteur_id !== '') ? prescripteur_id : null,
+                                contact_nom_libre: contact_nom_libre || null
                             };
 
                             await supabase.from('visit_reports').update(updateData).eq('id', lastVisit.id);
@@ -2357,6 +2359,26 @@ if (!checkPerm(req, 'can_manage_catalog')) return res.status(403).json({ error: 
     return res.json({ status: "success" });
 }
 
+
+
+
+    // --- LISTER LES PRESCRIPTEURS OFFICIELS ---
+else if (action === 'list-prescripteurs') {
+    try {
+        const { data, error } = await supabase
+            .from('prescripteurs')
+            .select('*')
+            .eq('is_active', true)
+            .order('nom_complet', { ascending: true });
+
+        if (error) throw error;
+        return res.json(data);
+    } catch (err) {
+        console.error("Erreur list-prescripteurs:", err.message);
+        return res.status(500).json({ error: err.message });
+    }
+}
+    
 // --- LISTER LES PRODUITS ---
 else if (action === 'list-products') {
     const { data, error } = await supabase.from('products').select('*').eq('is_active', true).order('name');
@@ -3786,6 +3808,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
