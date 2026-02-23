@@ -1953,14 +1953,12 @@ else if (action === 'list-roles') {
 
 
            
-
-     // ============================================================
-        // 15. POINTAGE (CORRIGÉ : SYNC HORS-LIGNE & SÉCURITÉ FIXES) ✅
+// ============================================================
+        // 15. POINTAGE (VERSION UNIVERSELLE : SYNCHRO TOTALE) ✅
         // ============================================================
-            else if (action === 'clock') {
+        else if (action === 'clock') {
             if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit" });
             
-            // 1. RÉCUPÉRATION DE TOUTES LES VARIABLES
             const { 
                 id, action: clockAction, gps, ip, outcome, report, 
                 is_last_exit, presentedProducts, time, 
@@ -1974,7 +1972,7 @@ else if (action === 'list-roles') {
             
             let proofUrl = null;
 
-            // Gestion photo (Multer)
+            // Gestion photo (Inchangée)
             if (req.files && req.files.length > 0) {
                 const file = req.files.find(f => f.fieldname === 'proof_photo');
                 if (file) {
@@ -1988,17 +1986,15 @@ else if (action === 'list-roles') {
                 const { data: emp } = await supabase.from('employees').select('employee_type').eq('id', id).single();
                 const isMobileAgent = (emp && emp.employee_type === 'MOBILE');
 
-                // --- SÉCURITÉ FIXES : BLOCAGE DOUBLE POINTAGE ---
+                // --- SÉCURITÉ FIXES ---
                 if (!isMobileAgent) {
                     const { data: existing } = await supabase.from('pointages').select('action').eq('employee_id', id).gte('heure', `${today}T00:00:00`);
                     if (clockAction === 'CLOCK_IN' && existing.some(p => p.action === 'CLOCK_IN')) return res.status(403).json({ error: "Entrée déjà validée." });
                     if (clockAction === 'CLOCK_OUT' && existing.some(p => p.action === 'CLOCK_OUT')) return res.status(403).json({ error: "Sortie déjà validée." });
                 }
 
-                // --- LOGIQUE GPS STRICTE ---
+                // --- LOGIQUE GPS (Inchangée) ---
                 let detectedLoc = null;
-
-                // A. Si lancé depuis le planning : Vérification forcée du lieu prévu
                 if (forced_location_id && clockAction === 'CLOCK_IN') {
                     const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
                     if (loc) {
@@ -2006,13 +2002,11 @@ else if (action === 'list-roles') {
                         if (dist <= loc.radius) {
                             detectedLoc = { name: loc.name, id: loc.id, table: 'mobile_locations' };
                         } else {
-                            // ERREUR : L'utilisateur n'est pas au bon endroit
                             return res.status(403).json({ error: `Échec GPS. Vous êtes à ${Math.round(dist)}m de ${loc.name}. Approchez-vous.` });
                         }
                     }
                 }
 
-                // B. Si pas de planning ou si c'est une sortie, on cherche le lieu le plus proche
                 if (!detectedLoc) {
                     const [zonesRes, mobilesRes] = await Promise.all([
                         supabase.from('zones').select('*').eq('actif', true),
@@ -2021,20 +2015,19 @@ else if (action === 'list-roles') {
                     let allPlaces = [];
                     if (zonesRes.data) zonesRes.data.forEach(z => allPlaces.push({ id: z.id, name: z.nom, lat: z.latitude, lon: z.longitude, radius: z.rayon, table: 'zones' }));
                     if (mobilesRes.data) mobilesRes.data.forEach(m => allPlaces.push({ id: m.id, name: m.name, lat: m.latitude, lon: m.longitude, radius: m.radius, table: 'mobile_locations' }));
-
                     for (let loc of allPlaces) {
                         const d = getDistanceInMeters(userLat, userLon, loc.lat, loc.lon);
-                        if (d <= loc.radius) {
-                            detectedLoc = loc;
-                            break;
-                        }
+                        if (d <= loc.radius) { detectedLoc = loc; break; }
                     }
                 }
 
                 if (!detectedLoc) return res.status(403).json({ error: "Lieu inconnu. Vous n'êtes sur aucun site répertorié." });
 
-                // 2. ENREGISTREMENT POINTAGE
-                const isFinalOut = (clockAction === 'CLOCK_OUT' && (is_last_exit === 'true' || !isMobileAgent));
+                // --- 2. CALCUL DE LA CLÔTURE UNIVERSELLE ---
+                // Si c'est une sortie : c'est final si (Mobile + case cochée) OU (Agent de bureau)
+                const isFinalOut = (clockAction === 'CLOCK_OUT' && (is_last_exit === 'true' || is_last_exit === true || !isMobileAgent));
+
+                // ENREGISTREMENT POINTAGE
                 await supabase.from('pointages').insert([{
                     employee_id: id,
                     action: clockAction,
@@ -2046,51 +2039,44 @@ else if (action === 'list-roles') {
                     is_final_out: isFinalOut
                 }]);
 
-                // 3. GESTION MOBILE (RAPPORT & PLANNING)
-                if (isMobileAgent) {
-                    if (clockAction === 'CLOCK_IN') {
-                        // Mise à jour de l'agenda si besoin
+                // --- 3. MISE À JOUR SYNCHRONISÉE DES STATUTS ---
+                if (clockAction === 'CLOCK_IN') {
+                    if (isMobileAgent) {
                         if (schedule_id) await supabase.from('employee_schedules').update({ status: 'CHECKED_IN' }).eq('id', schedule_id);
-                        
                         await supabase.from('visit_reports').insert([{
-                            employee_id: id,
-                            check_in_time: eventTime,
-                            location_name: detectedLoc.name,
+                            employee_id: id, check_in_time: eventTime, location_name: detectedLoc.name,
                             location_id: (detectedLoc.table === 'mobile_locations') ? detectedLoc.id : null,
                             schedule_ref_id: schedule_id || null
                         }]);
-                        await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', id);
-                    } 
-                    else {
-                        // CLOCK_OUT
+                    }
+                    // Tout le monde passe en "En Poste" quand il entre
+                    await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', id);
+                } 
+                else {
+                    // CAS SORTIE (CLOCK_OUT)
+                    if (isMobileAgent) {
                         const { data: lastVisit } = await supabase.from('visit_reports')
-                            .select('id, check_in_time')
-                            .eq('employee_id', id).is('check_out_time', null)
+                            .select('id, check_in_time').eq('employee_id', id).is('check_out_time', null)
                             .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
 
                         if (lastVisit) {
                             const duration = Math.round((eventTime - new Date(lastVisit.check_in_time)) / (1000 * 60));
-                            
-                            const updateReport = {
-                                check_out_time: eventTime,
-                                outcome: outcome || 'VU',
-                                notes: report || '',
-                                proof_url: proofUrl,
+                            await supabase.from('visit_reports').update({
+                                check_out_time: eventTime, outcome: outcome || 'VU', notes: report || '', proof_url: proofUrl,
                                 duration_minutes: duration > 0 ? duration : 1,
                                 presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || []),
-                                prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre' && prescripteur_id !== '') ? prescripteur_id : null,
+                                prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
                                 contact_nom_libre: contact_nom_libre || null
-                            };
+                            }).eq('id', lastVisit.id);
+                        }
 
-                            await supabase.from('visit_reports').update(updateReport).eq('id', lastVisit.id);
-
-                            if (is_last_exit === 'true' || is_last_exit === true) {
-                                await supabase.from('employees').update({ statut: 'Actif' }).eq('id', id);
-                                if (schedule_id) await supabase.from('employee_schedules').update({ status: 'COMPLETED' }).eq('id', schedule_id);
-                            }
+                        if (isFinalOut && schedule_id) {
+                            await supabase.from('employee_schedules').update({ status: 'COMPLETED' }).eq('id', schedule_id);
                         }
                     }
-                } else {
+                    
+                    // RÈGLE D'OR : À la sortie (visite simple ou fin de journée), on repasse le texte en "Actif"
+                    // Le Dashboard gère le reste via le flag 'is_final_out' de la table pointages
                     await supabase.from('employees').update({ statut: 'Actif' }).eq('id', id);
                 }
 
@@ -3272,26 +3258,33 @@ else if (action === 'read-payroll') {
 
                 const status = { presents: [], partis: [], absents: [] };
 
-                if (emps) {
-                    emps.forEach(e => {
-                        const sesPointages = (pointages || []).filter(p => p.employee_id === e.id);
-                        
-                        if (sesPointages.length === 0) {
-                            // MODIFICATION : Si le statut est "En Poste" mais pas encore de pointage reçu
-                            if (e.statut === 'En Poste') status.presents.push(e);
-                            else status.absents.push(e);
-                        } else {
-                            const dernier = sesPointages[sesPointages.length - 1];
-                            // MODIFICATION : Un employé est présent si son dernier pointage est IN 
-                            // OU si son statut forcé est "En Poste"
-                            if (dernier.action === 'CLOCK_IN' || e.statut === 'En Poste') {
-                                status.presents.push(e);
-                            } else {
-                                status.partis.push(e);
-                            }
-                        }
-                    });
+        // Dans server.js, route 'live-attendance'
+        if (emps) {
+            emps.forEach(e => {
+                const sesPointages = (pointages || []).filter(p => p.employee_id === e.id);
+                
+                if (sesPointages.length === 0) {
+                    status.absents.push(e);
+                } else {
+                    // Source de vérité : Le dernier pointage enregistré
+                    const dernier = sesPointages[sesPointages.length - 1];
+        
+                    // RÈGLE UNIVERSELLE :
+                    // Si le dernier geste est une SORTIE et que c'est marqué comme FINAL
+                    if (dernier.action === 'CLOCK_OUT' && (dernier.is_final_out === true || dernier.is_final_out === 'true')) {
+                        status.partis.push(e); // Direction -> Carte Bleue (Journée terminée)
+                    } 
+                    // Si le dernier geste est une ENTRÉE
+                    else if (dernier.action === 'CLOCK_IN') {
+                        status.presents.push(e); // Direction -> Carte Verte (En poste)
+                    }
+                    // Cas Mobile : Sortie de pharmacie mais pas fin de journée
+                    else {
+                        status.presents.push(e); // Reste en Vert (En poste) car il va vers une autre pharmacie
+                    }
                 }
+            });
+        }
                 return res.json(status);
             } catch (err) { return res.status(500).json({ error: err.message }); }
         }
@@ -3447,8 +3440,8 @@ else if (action === 'read-modules') {
 
         
  
-         // ============================================================
-        // VÉRIFIER L'ÉTAT DU BOUTON (VÉRITÉ BDD + AUTO-CLEAN) ✅
+// ============================================================
+        // VÉRIFIER L'ÉTAT DU BOUTON (VÉRIF UNIVERSELLE DU FINAL_OUT) ✅
         // ============================================================
         else if (action === 'get-clock-status') {
             const { employee_id } = req.query;
@@ -3459,7 +3452,7 @@ else if (action === 'read-modules') {
             const { data: emp } = await supabase.from('employees').select('employee_type').eq('id', employee_id).single();
             const isMobile = (emp && emp.employee_type === 'MOBILE');
 
-            // 2. Récupérer le DERNIER pointage (sans limite de date)
+            // 2. Récupérer le DERNIER pointage
             const { data: lastRecord } = await supabase
                 .from('pointages')
                 .select('action, heure, is_final_out')
@@ -3476,39 +3469,32 @@ else if (action === 'read-modules') {
                 const diffHours = (now - lastTime) / (1000 * 60 * 60);
 
                 if (lastRecord.action === 'CLOCK_IN') {
-                    // --- CAS A : ENTRÉE EN COURS ---
-                    // Si l'entrée date de moins de 14h, on est "dedans" (même si minuit est passé)
+                    // --- CAS ENTRÉE EN COURS ---
                     if (diffHours < 14) {
                         status = 'IN';
                     } else {
-                        // --- SÉCURITÉ OUBLI ---
-                        // Si l'entrée date de plus de 14h, on considère que l'employé a oublié de sortir.
-                        // On reset le bouton sur "ENTRÉE" pour ne pas le bloquer le lendemain.
-                        status = 'OUT';
+                        status = 'OUT'; // Reset automatique après 14h d'oubli
                     }
                 } 
                 else if (lastRecord.action === 'CLOCK_OUT') {
-                    // --- CAS B : SORTIE EFFECTUÉE ---
-                    // 1. Si c'est un employé MOBILE : il redevient "OUT" (Bouton Vert) 
-                    // pour pouvoir faire sa prochaine pharmacie.
-                    status = 'OUT';
-
-                    // 2. Sauf s'il a marqué "C'est ma dernière sortie" (is_final_out)
-                    if (lastRecord.is_final_out) {
-                        // On bloque le bouton (DONE) seulement si la sortie date de moins de 12h
-                        // (Sinon on considère que c'est une nouvelle journée qui commence)
+                    // --- RÈGLE UNIVERSELLE : SORTIE FINALE (Priorité n°1) ---
+                    // Si le champ is_final_out est vrai, peu importe le type (Admin, Mobile, Bureau)
+                    if (lastRecord.is_final_out === true || lastRecord.is_final_out === 'true') {
                         if (diffHours < 12) {
                             status = 'DONE';
                             isDayFinished = true;
+                        } else {
+                            status = 'OUT'; // Après 12h, on permet de recommencer une journée
                         }
                     }
-                    
-                    // 3. Cas particulier pour les FIXES (Bureau/Sécurité)
-                    // Si le dernier record est une SORTIE effectuée "aujourd'hui" (date civile)
-                    // alors on clôture la journée par défaut.
-                    if (!isMobile && lastTime.toISOString().split('T')[0] === todayStr) {
+                    // --- RÈGLE BUREAU (Auto-clôture au changement de jour) ---
+                    else if (!isMobile && lastTime.toISOString().split('T')[0] === todayStr) {
                         status = 'DONE';
                         isDayFinished = true;
+                    }
+                    else {
+                        // Cas Mobile : Sortie de pharmacie "normale", on peut re-pointer Entrée
+                        status = 'OUT';
                     }
                 }
             }
@@ -3519,8 +3505,6 @@ else if (action === 'read-modules') {
                 day_finished: isDayFinished
             });
         }
-
-
 
 
             
@@ -3913,6 +3897,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
