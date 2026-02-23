@@ -171,7 +171,7 @@ const authenticateToken = (req, res, next) => {
     }
 
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
-        if (err) return res.status(403).json({ error: "Session expirée" });
+        if (err) return res.status(401).json({ error: "Session expirée" }); // 401 = Expiré
         
         // SECURITÉ : On s'assure que decoded.permissions existe toujours
         req.user = {
@@ -235,7 +235,7 @@ app.all('/api/:action', upload.any(), async (req, res) => {
                 }
             }
 
-            const userRole = emp ? emp.role : 'EMPLOYEE';
+            const userRole = emp ? (emp.role || 'EMPLOYEE').toUpperCase().trim() : 'EMPLOYEE';
 
             // --- RÉCUPÉRATION DES DROITS ---
             const { data: perms } = await supabase
@@ -313,23 +313,33 @@ else if (action === 'read') {
             .eq('id', currentUserId)
             .single();
 
-        if (targetId) {
+ if (targetId) {
             if (!checkPerm(req, 'can_see_employees')) {
-                let idorQuery = supabase.from('employees').select('id').eq('id', targetId);
-                let idorConditions = [];
-                idorConditions.push(`id.eq.${currentUserId}`); 
-                idorConditions.push(`hierarchy_path.ilike.${requester.hierarchy_path}/%`); 
-                
-                if (requester.management_scope?.length > 0) {
-                    const scopeList = `(${requester.management_scope.map(s => `"${s}"`).join(',')})`;
-                    idorConditions.push(`departement.in.${scopeList}`); 
-                }
+                // CORRECTION MAJEURE : Si l'utilisateur demande à voir SON PROPRE profil, on le laisse passer immédiatement
+                if (String(targetId) === String(currentUserId)) {
+                    // Accès autorisé à soi-même
+                } else {
+                    let idorQuery = supabase.from('employees').select('id').eq('id', targetId);
+                    let idorConditions = [];
+                    
+                    // On vérifie que la hiérarchie existe avant de l'interroger
+                    if (requester && requester.hierarchy_path) {
+                        idorConditions.push(`hierarchy_path.ilike.${requester.hierarchy_path}/%`);
+                    }
+                    
+                    if (requester && requester.management_scope?.length > 0) {
+                        const scopeList = `(${requester.management_scope.map(s => `"${s}"`).join(',')})`;
+                        idorConditions.push(`departement.in.${scopeList}`); 
+                    }
 
-                const { data: checkAccess } = await idorQuery.or(idorConditions.join(',')).maybeSingle();
-
-                if (!checkAccess) {
-                    console.error(`🚨 Tentative IDOR bloquée : ${currentUserId} -> ${targetId}`);
-                    return res.status(403).json({ error: "Accès refusé : Profil hors périmètre." });
+                    if (idorConditions.length > 0) {
+                        const { data: checkAccess } = await idorQuery.or(idorConditions.join(',')).maybeSingle();
+                        if (!checkAccess) {
+                            return res.status(403).json({ error: "Accès refusé : Profil hors périmètre." });
+                        }
+                    } else {
+                        return res.status(403).json({ error: "Accès refusé : Aucun périmètre défini." });
+                    }
                 }
             }
         }
@@ -3900,6 +3910,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
