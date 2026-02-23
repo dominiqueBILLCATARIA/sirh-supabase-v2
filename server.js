@@ -369,8 +369,14 @@ else if (action === 'read') {
         
         if (targetId) query = query.eq('id', targetId);
         if (search) query = query.or(`nom.ilike.%${search}%,matricule.ilike.%${search}%`);
-        if (status !== 'all') query = query.eq('statut', status);
-        if (type !== 'all') query = query.eq('employee_type', type);
+        if (status !== 'all') {
+            if (status === 'Actif') {
+                // On demande au serveur les gens qui sont soit "Actif" soit "En Poste"
+                query = query.in('statut', ['Actif', 'En Poste']);
+            } else {
+                query = query.eq('statut', status);
+            }
+        }  if (type !== 'all') query = query.eq('employee_type', type);
         if (dept !== 'all') query = query.eq('departement', dept);
 
         const { data, error, count } = await query
@@ -3894,6 +3900,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
