@@ -2362,6 +2362,74 @@ if (!checkPerm(req, 'can_manage_catalog')) return res.status(403).json({ error: 
 
 
 
+
+    // --- AJOUTER UN PRESCRIPTEUR (ADMIN/MANAGER) ---
+        else if (action === 'add-prescripteur') {
+            if (!req.user.permissions || !req.user.permissions.can_manage_config) {
+                return res.status(403).json({ error: "Accès refusé. Réservé aux managers." });
+            }
+
+            const { nom_complet, fonction, telephone, location_id } = req.body;
+
+            // On vérifie si un médecin avec ce nom existe déjà (pour éviter les doublons)
+            const { data: exist } = await supabase
+                .from('prescripteurs')
+                .select('id')
+                .ilike('nom_complet', nom_complet)
+                .maybeSingle();
+
+            if (exist) {
+                return res.status(400).json({ error: "Ce prescripteur existe déjà dans la base." });
+            }
+
+            const { error } = await supabase.from('prescripteurs').insert([{
+                nom_complet,
+                fonction,
+                telephone,
+                location_id: location_id || null,
+                is_active: true
+            }]);
+
+            if (error) throw error;
+            return res.json({ status: "success" });
+        }
+
+        // --- SUPPRIMER (DÉSACTIVER) UN PRESCRIPTEUR ---
+        else if (action === 'delete-prescripteur') {
+            if (!req.user.permissions || !req.user.permissions.can_manage_config) {
+                return res.status(403).json({ error: "Accès refusé." });
+            }
+            const { id } = req.body;
+            // On ne supprime pas physiquement pour garder l'historique des rapports, on désactive
+            const { error } = await supabase.from('prescripteurs').update({ is_active: false }).eq('id', id);
+            
+            if (error) throw error;
+            return res.json({ status: "success" });
+        }
+            
+
+            // --- MODIFIER UN PRESCRIPTEUR ---
+        else if (action === 'update-prescripteur') {
+            if (!req.user.permissions || !req.user.permissions.can_manage_config) {
+                return res.status(403).json({ error: "Accès refusé." });
+            }
+
+            const { id, nom_complet, fonction, telephone, location_id } = req.body;
+
+            const { error } = await supabase
+                .from('prescripteurs')
+                .update({
+                    nom_complet,
+                    fonction,
+                    telephone,
+                    location_id: location_id || null
+                })
+                .eq('id', id);
+
+            if (error) throw error;
+            return res.json({ status: "success" });
+        }
+            
     // --- LISTER LES PRESCRIPTEURS OFFICIELS ---
 else if (action === 'list-prescripteurs') {
     try {
@@ -3822,6 +3890,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
