@@ -914,17 +914,29 @@ else if (action === 'contract-gen') {
         const { data: emp, error } = await supabase.from('employees').select('*').eq('id', id).single();
         if (error || !emp) throw new Error("Employé introuvable");
 
-        // 2. Recherche du modèle (Template)
-        let templateQuery = supabase.from('contract_templates').select('template_file_url');
+        // 2. RECHERCHE INTELLIGENTE DU MODÈLE (CORRECTIONS)
+        let templateData = null;
+
+        // Tentative A : Par l'ID technique du modèle (si sélectionné à la création)
         if (emp.contract_template_id) {
-            templateQuery = templateQuery.eq('role_target', emp.contract_template_id);
-        } else {
-            templateQuery = templateQuery.eq('role_target', emp.role || 'EMPLOYEE');
+            const { data: byId } = await supabase.from('contract_templates')
+                .select('template_file_url')
+                .eq('id', emp.contract_template_id)
+                .maybeSingle();
+            templateData = byId;
         }
-        const { data: templateData } = await templateQuery.maybeSingle();
+
+        // Tentative B : Par le Rôle si A n'a rien donné
+        if (!templateData) {
+            const { data: byRole } = await supabase.from('contract_templates')
+                .select('template_file_url')
+                .eq('role_target', emp.role || 'EMPLOYEE')
+                .maybeSingle();
+            templateData = byRole;
+        }
 
         if (!templateData || !templateData.template_file_url) {
-            throw new Error("Aucun modèle de contrat configuré pour ce rôle.");
+            throw new Error("Aucun modèle de contrat configuré pour ce rôle ou cet ID.");
         }
 
         // 3. Téléchargement et Remplissage du Word
@@ -937,47 +949,46 @@ else if (action === 'contract-gen') {
             nullGetter() { return " "; } 
         });
         
-            let dateFinCalculee = "Indéterminée";
-            const joursContrat = parseInt(emp.type_contrat); // On récupère 90, 180 ou 365
+        let dateFinCalculee = "Indéterminée";
+        const joursContrat = parseInt(emp.type_contrat); // On récupère 90, 180 ou 365
+        
+        if (joursContrat < 365 && emp.date_embauche) {
+            const dateFin = new Date(emp.date_embauche);
+            dateFin.setDate(dateFin.getDate() + joursContrat);
+            dateFinCalculee = dateFin.toLocaleDateString('fr-FR');
+        }
+
+        const now = new Date();
+        const dataToInject = {
+            civilite: emp.civilite || 'Monsieur/Madame',
+            nom_complet: emp.nom,
+            poste: emp.poste || 'Collaborateur',
+            matricule: emp.matricule || 'N/A',
+            adresse: emp.adresse || 'Non renseignée',
+            type_contrat: emp.type_contrat || 'Essai',
+            departement: emp.departement || 'Général',
+            employee_type: emp.employee_type || 'OFFICE',
             
-            if (joursContrat < 365 && emp.date_embauche) {
-                const dateFin = new Date(emp.date_embauche);
-                dateFin.setDate(dateFin.getDate() + joursContrat);
-                dateFinCalculee = dateFin.toLocaleDateString('fr-FR');
-            }
-const now = new Date();
-const dataToInject = {
-    civilite: emp.civilite || 'Monsieur/Madame',
-    nom_complet: emp.nom,
-    poste: emp.poste || 'Collaborateur',
-    matricule: emp.matricule || 'N/A',
-    adresse: emp.adresse || 'Non renseignée',
-    type_contrat: emp.type_contrat || 'Essai',
+            // Dates et Durées
+            date_embauche: emp.date_embauche ? new Date(emp.date_embauche).toLocaleDateString('fr-FR') : '---',
+            date_fin: dateFinCalculee, 
+            duree_essai: emp.duree_essai || '3 mois',
+            
+            // Identité
+            lieu_naissance: emp.lieu_naissance || '---',
+            nationalite: emp.nationalite || 'Béninoise',
+            temps_travail: emp.temps_travail || '40h',
 
-    departement: emp.departement || 'Général',
-    employee_type: emp.employee_type || 'OFFICE',
-    
-    // Dates et Durées
-    date_embauche: emp.date_embauche ? new Date(emp.date_embauche).toLocaleDateString('fr-FR') : '---',
-    date_fin: dateFinCalculee, // <--- CALCULÉ AUTOMATIQUEMENT
-    duree_essai: emp.duree_essai || '3 mois',
-    
-    // Identité
-    lieu_naissance: emp.lieu_naissance || '---',
-    nationalite: emp.nationalite || 'Béninoise',
-    temps_travail: emp.temps_travail || '40h',
-
-    
-    // Finances (formatage avec espaces pour les milliers)
-    salaire_base: new Intl.NumberFormat('fr-FR').format(emp.salaire_brut_fixe || 0),
-    transport: new Intl.NumberFormat('fr-FR').format(emp.indemnite_transport || 0),
-    logement: new Intl.NumberFormat('fr-FR').format(emp.indemnite_logement || 0),
-    
-    // Signature
-    lieu_signature: emp.lieu_signature || 'Cotonou',
-    date_jour: now.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }),
-    signature: SIGNATURE_PLACEHOLDER  // Pour la balise {%signature}
-};
+            // Finances
+            salaire_base: new Intl.NumberFormat('fr-FR').format(emp.salaire_brut_fixe || 0),
+            transport: new Intl.NumberFormat('fr-FR').format(emp.indemnite_transport || 0),
+            logement: new Intl.NumberFormat('fr-FR').format(emp.indemnite_logement || 0),
+            
+            // Signature
+            lieu_signature: emp.lieu_signature || 'Cotonou',
+            date_jour: now.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }),
+            signature: SIGNATURE_PLACEHOLDER 
+        };
 
         doc.render(dataToInject);
         const docxBuffer = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
@@ -986,7 +997,7 @@ const dataToInject = {
         console.log("🔄 Conversion du brouillon en PDF...");
         const pdfBuffer = await convertAsync(docxBuffer, '.pdf', undefined);
 
-        // 5. ENVOI DU PDF AU NAVIGATEUR (Sans forcer le téléchargement)
+        // 5. ENVOI DU PDF AU NAVIGATEUR
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', 'inline; filename=Brouillon_Contrat.pdf');
         res.send(pdfBuffer);
@@ -999,12 +1010,10 @@ const dataToInject = {
 
 
 
-
-
 // ============================================================
         // 14. ARCHIVAGE CONTRAT (SIGNATURE ÉLECTRONIQUE OU SCAN) ✅
         // ============================================================
-        else if (action === 'contract-upload') {
+       else if (action === 'contract-upload') {
 
             // SÉCURITÉ STRICTE
             if (!checkPerm(req, 'can_see_employees')) {
@@ -1043,42 +1052,52 @@ const dataToInject = {
                 console.log("✍️ Signature et Conversion PDF en cours...");
 
                 try {
-                    // 1. Recherche du modèle
-                    let templateQuery = supabase.from('contract_templates').select('template_file_url');
+                    // --- RECHERCHE INTELLIGENTE DU MODÈLE (CORRECTIONS ICI) ---
+                    let templateData = null;
+
+                    // Tentative A : Par l'ID technique du modèle
                     if (emp.contract_template_id) {
-                        templateQuery = templateQuery.eq('role_target', emp.contract_template_id);
-                    } else {
-                        templateQuery = templateQuery.eq('role_target', emp.role || 'EMPLOYEE');
+                        const { data: byId } = await supabase.from('contract_templates')
+                            .select('template_file_url')
+                            .eq('id', emp.contract_template_id)
+                            .maybeSingle();
+                        templateData = byId;
                     }
-                    const { data: templateData } = await templateQuery.maybeSingle();
+
+                    // Tentative B : Par le Rôle (ou défaut EMPLOYEE)
+                    if (!templateData) {
+                        const { data: byRole } = await supabase.from('contract_templates')
+                            .select('template_file_url')
+                            .eq('role_target', emp.role || 'EMPLOYEE')
+                            .maybeSingle();
+                        templateData = byRole;
+                    }
 
                     if (!templateData || !templateData.template_file_url) {
-                        throw new Error("Modèle de contrat introuvable. Veuillez configurer un modèle DOCX.");
+                        throw new Error("Modèle de contrat introuvable. Veuillez vérifier vos modèles DOCX.");
                     }
+                    // --- FIN DE LA CORRECTION DE RECHERCHE ---
 
                     // 2. Récupération du modèle Word
                     const fileResponse = await axios.get(templateData.template_file_url, { responseType: 'arraybuffer' });
                     const zip = new PizZip(fileResponse.data);
 
                     // 3. Module Image pour la Signature
-                        const imageModule = new ImageModule({
-                            centered: false,
-                            getImage: function(tagValue) {
-                                // Nettoyage du préfixe base64
-                                const base64Data = tagValue.replace(/^data:image\/\w+;base64,/, "");
-                                return Buffer.from(base64Data, 'base64');
-                            },
-                            getSize: function(img, tagValue) {
-                                // SI C'EST LE BROUILLON (Placeholder)
-                                if (tagValue === SIGNATURE_PLACEHOLDER) {
-                                    return [300, 80]; // Un grand cadre rectangulaire
-                                }
-                                // SI C'EST LA VRAIE SIGNATURE
-                                return [180, 70]; // Taille de signature standard
+                    const imageModule = new ImageModule({
+                        centered: false,
+                        getImage: function(tagValue) {
+                            const base64Data = tagValue.replace(/^data:image\/\w+;base64,/, "");
+                            return Buffer.from(base64Data, 'base64');
+                        },
+                        getSize: function(img, tagValue) {
+                            if (tagValue === SIGNATURE_PLACEHOLDER) {
+                                return [300, 80]; 
                             }
-                        });
+                            return [180, 70]; 
+                        }
+                    });
 
-                    // 4. Remplissage du document avec TOUTES les variables
+                    // 4. Remplissage du document
                     const doc = new Docxtemplater(zip, {
                         paragraphLoop: true,
                         linebreaks: true,
@@ -1086,48 +1105,39 @@ const dataToInject = {
                         nullGetter() { return " "; } 
                     });
 
-            const now = new Date();
+                    const now = new Date();
 
-            let dateFinCalculee = "Indéterminée";
-            const joursContrat = parseInt(emp.type_contrat); // On récupère 90, 180 ou 365
-            
-            if (joursContrat < 365 && emp.date_embauche) {
-                const dateFin = new Date(emp.date_embauche);
-                dateFin.setDate(dateFin.getDate() + joursContrat);
-                dateFinCalculee = dateFin.toLocaleDateString('fr-FR');
-            }
-            const dataToInject = {
-                civilite: emp.civilite || 'Monsieur/Madame',
-                nom_complet: emp.nom,
-                poste: emp.poste || 'Collaborateur',
-                matricule: emp.matricule || 'N/A',
-                adresse: emp.adresse || 'Non renseignée',
-                type_contrat: emp.type_contrat || 'Essai',
-            
-                departement: emp.departement || 'Général',
-                employee_type: emp.employee_type || 'OFFICE',
-                
-                // Dates et Durées
-                date_embauche: emp.date_embauche ? new Date(emp.date_embauche).toLocaleDateString('fr-FR') : '---',
-                date_fin: dateFinCalculee, // <--- CALCULÉ AUTOMATIQUEMENT
-                duree_essai: emp.duree_essai || '3 mois',
-                
-                // Identité
-                lieu_naissance: emp.lieu_naissance || '---',
-                nationalite: emp.nationalite || 'Béninoise',
-                temps_travail: emp.temps_travail || '40h',
-            
-                
-                // Finances (formatage avec espaces pour les milliers)
-                salaire_base: new Intl.NumberFormat('fr-FR').format(emp.salaire_brut_fixe || 0),
-                transport: new Intl.NumberFormat('fr-FR').format(emp.indemnite_transport || 0),
-                logement: new Intl.NumberFormat('fr-FR').format(emp.indemnite_logement || 0),
-                
-                // Signature
-                lieu_signature: emp.lieu_signature || 'Cotonou',
-                date_jour: now.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }),
-                signature: signature // Pour la balise {%signature}
-            };
+                    let dateFinCalculee = "Indéterminée";
+                    const joursContrat = parseInt(emp.type_contrat); 
+                    
+                    if (joursContrat < 365 && emp.date_embauche) {
+                        const dateFin = new Date(emp.date_embauche);
+                        dateFin.setDate(dateFin.getDate() + joursContrat);
+                        dateFinCalculee = dateFin.toLocaleDateString('fr-FR');
+                    }
+
+                    const dataToInject = {
+                        civilite: emp.civilite || 'Monsieur/Madame',
+                        nom_complet: emp.nom,
+                        poste: emp.poste || 'Collaborateur',
+                        matricule: emp.matricule || 'N/A',
+                        adresse: emp.adresse || 'Non renseignée',
+                        type_contrat: emp.type_contrat || 'Essai',
+                        departement: emp.departement || 'Général',
+                        employee_type: emp.employee_type || 'OFFICE',
+                        date_embauche: emp.date_embauche ? new Date(emp.date_embauche).toLocaleDateString('fr-FR') : '---',
+                        date_fin: dateFinCalculee, 
+                        duree_essai: emp.duree_essai || '3 mois',
+                        lieu_naissance: emp.lieu_naissance || '---',
+                        nationalite: emp.nationalite || 'Béninoise',
+                        temps_travail: emp.temps_travail || '40h',
+                        salaire_base: new Intl.NumberFormat('fr-FR').format(emp.salaire_brut_fixe || 0),
+                        transport: new Intl.NumberFormat('fr-FR').format(emp.indemnite_transport || 0),
+                        logement: new Intl.NumberFormat('fr-FR').format(emp.indemnite_logement || 0),
+                        lieu_signature: emp.lieu_signature || 'Cotonou',
+                        date_jour: now.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }),
+                        signature: signature 
+                    };
 
                     doc.render(dataToInject);
 
@@ -1164,9 +1174,6 @@ const dataToInject = {
                 return res.status(400).json({ error: "Aucune donnée de contrat ou signature reçue." });
             }
         }
-    
-
-
 
        
 
@@ -3940,6 +3947,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
