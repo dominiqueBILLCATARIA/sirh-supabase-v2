@@ -19,6 +19,15 @@ const SIGNATURE_PLACEHOLDER = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASw
 // Note : Tu peux créer ta propre petite image PNG "ZONE DE SIGNATURE" et la convertir en base64 si tu préfères un design spécifique.
 
 
+// Fonction pour calculer la date de fin (Date début + nombre de jours)
+const getEndDate = (startDate, days) => {
+    if (!startDate || !days) return null;
+    const date = new Date(startDate);
+    date.setDate(date.getDate() + parseInt(days));
+    return date.toISOString().split('T')[0]; // Renvoie format YYYY-MM-DD
+};
+
+
 async function isTargetAuthorized(requester, targetId) {
     // 1. Si le demandeur est ADMIN ou RH, il a tous les droits
     if (requester.permissions?.can_see_employees) return true;
@@ -1717,6 +1726,9 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
             const manager_id = req.query.manager_id === "null" || req.query.manager_id === "" ? null : req.query.manager_id;
             const scope = req.query.scope ? JSON.parse(req.query.scope) : null;
             // Préparation des données de mise à jour
+            
+            const daysLimit = limit || '365';
+
             const updates = {
                 statut: statut,
                 role: role,
@@ -1725,6 +1737,7 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                 poste: req.query.poste || undefined, // Optionnel
                 type_contrat: limit === '365' ? 'CDI' : (limit === '180' ? 'CDD' : 'Essai'),
                 date_embauche: start_date,
+                date_fin_contrat: getEndDate(start_date, daysLimit),
                 manager_id: manager_id,
                 management_scope: scope,
                 salaire_brut_fixe: parseFloat(req.query.salaire_brut_fixe) || 0,
@@ -2518,7 +2531,8 @@ else if (action === 'write') {
             const { data: nextMatricule, error: seqErr } = await supabase.rpc('get_next_formatted_matricule');
             if (seqErr) throw new Error("Erreur de génération de matricule");
             // -----------------------------------------------------
-          
+          const daysLimit = body.limit || '365'; // Récupère la durée choisie (90, 180, 365)
+
 
     // --- D. INSERTION DANS EMPLOYEES (AVEC LES NOUVEAUX CHAMPS CONTRACTUELS) ---
     const { data: newEmp, error: empErr } = await supabase.from('employees').insert([{
@@ -2534,7 +2548,7 @@ else if (action === 'write') {
         employee_type: body.employee_type || 'OFFICE',
         statut: 'Actif',
         date_embauche: body.date,
-        date_fin_contrat: body.date_fin_contrat || null,
+        date_fin_contrat: getEndDate(body.date, daysLimit), 
         type_contrat: body.limit === '365' ? 'CDI' : (body.limit === '180' ? 'CDD' : 'Essai'),
         solde_conges: 25,
         photo_url: uploadedDocs.photo_url,
@@ -3911,6 +3925,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
