@@ -2073,22 +2073,43 @@ else if (action === 'list-roles') {
                     // Tout le monde passe en "En Poste" quand il entre
                     await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', id);
                 } 
-                else {
+        else {
                     // CAS SORTIE (CLOCK_OUT)
                     if (isMobileAgent) {
+                        // 1. On cherche une visite ouverte (cas normal)
                         const { data: lastVisit } = await supabase.from('visit_reports')
                             .select('id, check_in_time').eq('employee_id', id).is('check_out_time', null)
                             .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
 
+                        const reportPayload = {
+                            check_out_time: eventTime, 
+                            outcome: outcome || 'VU', 
+                            notes: report || '', 
+                            proof_url: proofUrl,
+                            duration_minutes: 0, // Sera recalculé si on a une entrée
+                            presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || []),
+                            prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
+                            contact_nom_libre: contact_nom_libre || null
+                        };
+
                         if (lastVisit) {
+                            // CAS A : On a trouvé l'entrée correspondante (Parfait)
                             const duration = Math.round((eventTime - new Date(lastVisit.check_in_time)) / (1000 * 60));
-                            await supabase.from('visit_reports').update({
-                                check_out_time: eventTime, outcome: outcome || 'VU', notes: report || '', proof_url: proofUrl,
-                                duration_minutes: duration > 0 ? duration : 1,
-                                presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || []),
-                                prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
-                                contact_nom_libre: contact_nom_libre || null
-                            }).eq('id', lastVisit.id);
+                            reportPayload.duration_minutes = duration > 0 ? duration : 1;
+                            
+                            await supabase.from('visit_reports').update(reportPayload).eq('id', lastVisit.id);
+                        } else {
+                            // CAS B (CORRECTION) : Pas d'entrée trouvée (Bug précédent ou oubli)
+                            // On CRÉE une visite "orpheline" pour ne pas perdre le rapport
+                            console.log("⚠️ Sortie sans entrée détectée : Création d'un rapport de visite orphelin.");
+                            
+                            reportPayload.employee_id = id;
+                            reportPayload.check_in_time = eventTime; // On met la même heure que la sortie
+                            reportPayload.location_name = detectedLoc.name;
+                            reportPayload.location_id = (detectedLoc.table === 'mobile_locations') ? detectedLoc.id : null;
+                            reportPayload.duration_minutes = 1; // 1 min par défaut
+                            
+                            await supabase.from('visit_reports').insert([reportPayload]);
                         }
 
                         if (isFinalOut && schedule_id) {
@@ -2096,8 +2117,7 @@ else if (action === 'list-roles') {
                         }
                     }
                     
-                    // RÈGLE D'OR : À la sortie (visite simple ou fin de journée), on repasse le texte en "Actif"
-                    // Le Dashboard gère le reste via le flag 'is_final_out' de la table pointages
+                    // RÈGLE D'OR : À la sortie, on repasse le texte en "Actif"
                     await supabase.from('employees').update({ statut: 'Actif' }).eq('id', id);
                 }
 
@@ -3979,6 +3999,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
