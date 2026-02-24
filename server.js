@@ -2231,17 +2231,18 @@ else if (action === 'submit-daily-report') {
                     .from('daily_reports')
                     .select('*, employees:employee_id (nom, matricule, poste)', { count: 'exact' });
 
-            // --- SÉCURITÉ : FILTRAGE HIÉRARCHIQUE & MASQUAGE ---
-                const canSeeAll = req.user.permissions && (req.user.permissions.can_view_reports || req.user.role === 'ADMIN' || req.user.role === 'RH');
-                
-                if (!canSeeAll) {
-                    // Délégué : Voit tout son historique
-                    query = query.eq('employee_id', req.user.emp_id);
-                } else {
-                    // Manager : Ne voit pas ce qui est déjà traité
-                    query = query.not('hidden_for_manager', 'is', true);
-                }
-                // ----------------------------------------
+        // --- FILTRE DE SÉCURITÉ AMÉLIORÉ ---
+        const isPersonalRequest = req.query.personal === 'true';
+        const canSeeAll = req.user.permissions && (req.user.permissions.can_view_reports || req.user.role === 'ADMIN' || req.user.role === 'RH');
+        
+        if (isPersonalRequest) {
+            query = query.eq('employee_id', req.user.emp_id);
+        }
+        else if (!canSeeAll) {
+            query = query.eq('employee_id', req.user.emp_id);
+        } else {
+            query = query.not('hidden_for_manager', 'is', true);
+        }
 
                 // 3. Exécution avec tri, pagination et plage (range)
                 const { data, error, count } = await query
@@ -3580,23 +3581,22 @@ else if (action === 'read-visit-reports') {
                     prescripteurs:prescripteur_id (nom_complet, fonction) 
                 `, { count: 'exact' });
 
-        // --- CORRECTION : FILTRE DE SÉCURITÉ & NETTOYAGE MANAGER ---
-                // Si l'utilisateur n'est pas Admin, RH ou Manager, il ne peut voir que SES rapports
-                const canSeeAll = req.user.permissions && (req.user.permissions.can_view_reports || req.user.role === 'ADMIN' || req.user.role === 'RH');
-                
-                if (!canSeeAll) {
-                    // CAS 1 : C'est un Délégué/Employé
-                    // Il voit UNIQUEMENT ses rapports, qu'ils soient validés ou non (Historique complet)
-                    console.log(`🔐 Filtrage des rapports pour l'employé : ${req.user.emp_id}`);
-                    query = query.eq('employee_id', req.user.emp_id);
-                } 
-                else {
-                    // CAS 2 : C'est un Manager / RH / Admin
-                    // Il voit tout le monde... SAUF ce qu'il a déjà traité (supprimé)
-                    // C'EST CETTE LIGNE QUI MANQUAIT :
-                    query = query.not('hidden_for_manager', 'is', true);
-                }
-                // ---------------------------------------------------------------
+// --- FILTRE DE SÉCURITÉ AMÉLIORÉ ---
+        const isPersonalRequest = req.query.personal === 'true'; // On vérifie si le front demande le mode perso
+        const canSeeAll = req.user.permissions && (req.user.permissions.can_view_reports || req.user.role === 'ADMIN' || req.user.role === 'RH');
+        
+        if (isPersonalRequest) {
+            // Mode Historique Perso : On voit tout son propre travail, même validé
+            query = query.eq('employee_id', req.user.emp_id);
+        } 
+        else if (!canSeeAll) {
+            // Simple employé sans droits : Ne voit que lui-même
+            query = query.eq('employee_id', req.user.emp_id);
+        } 
+        else {
+            // Manager en mode "Gestion" : Ne voit que ce qui n'est pas encore traité
+            query = query.not('hidden_for_manager', 'is', true);
+        }
 
         // 2. Exécution avec pagination et tri
         const { data, error, count } = await query
@@ -4004,6 +4004,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
