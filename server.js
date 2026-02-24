@@ -2003,28 +2003,26 @@ else if (action === 'list-roles') {
                 }
             }
 
-            try {
+           try {
                 const { data: emp } = await supabase.from('employees').select('employee_type').eq('id', id).single();
                 const isMobileAgent = (emp && emp.employee_type === 'MOBILE');
 
-                // --- SÉCURITÉ FIXES ---
+                // --- 1. SÉCURITÉ FIXES (BUREAU) ---
+                // S'ils ne sont pas mobiles : 1 seule entrée et 1 seule sortie autorisées.
                 if (!isMobileAgent) {
                     const { data: existing } = await supabase.from('pointages').select('action').eq('employee_id', id).gte('heure', `${today}T00:00:00`);
                     if (clockAction === 'CLOCK_IN' && existing.some(p => p.action === 'CLOCK_IN')) return res.status(403).json({ error: "Entrée déjà validée." });
                     if (clockAction === 'CLOCK_OUT' && existing.some(p => p.action === 'CLOCK_OUT')) return res.status(403).json({ error: "Sortie déjà validée." });
                 }
 
-                // --- LOGIQUE GPS (Inchangée) ---
+                // --- LOGIQUE GPS (Recherche du lieu le plus proche) ---
                 let detectedLoc = null;
                 if (forced_location_id && clockAction === 'CLOCK_IN') {
                     const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
                     if (loc) {
                         const dist = getDistanceInMeters(userLat, userLon, loc.latitude, loc.longitude);
-                        if (dist <= loc.radius) {
-                            detectedLoc = { name: loc.name, id: loc.id, table: 'mobile_locations' };
-                        } else {
-                            return res.status(403).json({ error: `Échec GPS. Vous êtes à ${Math.round(dist)}m de ${loc.name}. Approchez-vous.` });
-                        }
+                        if (dist <= loc.radius) detectedLoc = { name: loc.name, id: loc.id, table: 'mobile_locations' };
+                        else return res.status(403).json({ error: `Échec GPS. Vous êtes à ${Math.round(dist)}m de ${loc.name}.` });
                     }
                 }
 
@@ -2042,14 +2040,14 @@ else if (action === 'list-roles') {
                     }
                 }
 
-                if (!detectedLoc) return res.status(403).json({ error: "Lieu inconnu. Vous n'êtes sur aucun site répertorié." });
+                if (!detectedLoc) return res.status(403).json({ error: "Lieu inconnu. Vous n'êtes sur aucun site autorisé." });
 
                 // --- 2. CALCUL DE LA CLÔTURE UNIVERSELLE ---
-                // Si c'est une sortie : c'est final si (Mobile + case cochée) OU (Agent de bureau)
+                // Si c'est une sortie : c'est final si (Mobile + case cochée) OU (Agent Bureau/Fixe)
                 const isFinalOut = (clockAction === 'CLOCK_OUT' && (is_last_exit === 'true' || is_last_exit === true || !isMobileAgent));
 
-                // ENREGISTREMENT POINTAGE
-                await supabase.from('pointages').insert([{
+                // ENREGISTREMENT POINTAGE (Dans la table pointages)
+                const { error: ptgErr } = await supabase.from('pointages').insert([{
                     employee_id: id,
                     action: clockAction,
                     heure: eventTime,
@@ -2059,33 +2057,27 @@ else if (action === 'list-roles') {
                     statut: 'Validé',
                     is_final_out: isFinalOut
                 }]);
+                if (ptgErr) throw new Error("Erreur création pointage : " + ptgErr.message);
 
-                // --- 3. MISE À JOUR SYNCHRONISÉE DES STATUTS ---
-// --- 3. MISE À JOUR SYNCHRONISÉE DES STATUTS ---
-                if (clockAction === 'CLOCK_IN') {
-                    if (isMobileAgent) {
+                // --- 3. GESTION DU RAPPORT DE VISITE (MOBILES UNIQUEMENT) ---
+                if (isMobileAgent) {
+                    if (clockAction === 'CLOCK_IN') {
                         if (schedule_id) await supabase.from('employee_schedules').update({ status: 'CHECKED_IN' }).eq('id', schedule_id);
                         
-                        // 👇 CORRECTION ICI
                         const { error: inErr } = await supabase.from('visit_reports').insert([{
                             employee_id: id, check_in_time: eventTime, location_name: detectedLoc.name,
                             location_id: (detectedLoc.table === 'mobile_locations') ? detectedLoc.id : null,
                             schedule_ref_id: schedule_id || null
                         }]);
-                        if (inErr) {
-                            console.error("❌ ERREUR SUPABASE (INSERT CLOCK_IN):", inErr);
-                            throw new Error("Impossible d'ouvrir la visite : " + inErr.message);
-                        }
-                    }
-                    // Tout le monde passe en "En Poste" quand il entre
-                    await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', id);
-                }
-        else {
-                    if (isMobileAgent) {
-                        // 1. On cherche une visite ouverte (cas normal)
+                        if (inErr) throw new Error("Erreur BDD ouverture visite : " + inErr.message);
+                    } 
+                    else if (clockAction === 'CLOCK_OUT') {
                         const { data: lastVisit } = await supabase.from('visit_reports')
                             .select('id, check_in_time').eq('employee_id', id).is('check_out_time', null)
                             .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
+
+                        // FORMATAGE ULTRA-SÉCURISÉ (Pour éviter les rejets SQL)
+                        const safePrescripteurId = (prescripteur_id && prescripteur_id !== 'autre' && prescripteur_id !== 'null' && prescripteur_id !== '') ? prescripteur_id : null;
 
                         const reportPayload = {
                             check_out_time: eventTime, 
@@ -2094,48 +2086,36 @@ else if (action === 'list-roles') {
                             proof_url: proofUrl,
                             duration_minutes: 0, 
                             presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || []),
-                            prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
+                            prescripteur_id: safePrescripteurId,
                             contact_nom_libre: contact_nom_libre || null
                         };
 
                         if (lastVisit) {
-                            // CAS A : On a trouvé l'entrée correspondante
                             const duration = Math.round((eventTime - new Date(lastVisit.check_in_time)) / (1000 * 60));
                             reportPayload.duration_minutes = duration > 0 ? duration : 1;
                             
-                            // 👇 CORRECTION ICI : On capture et on jette l'erreur !
-                            const { error: visitUpdateErr } = await supabase.from('visit_reports').update(reportPayload).eq('id', lastVisit.id);
-                            if (visitUpdateErr) {
-                                console.error("❌ ERREUR SUPABASE (UPDATE VISITE):", visitUpdateErr);
-                                throw new Error("Erreur BDD lors de la sauvegarde du rapport : " + visitUpdateErr.message);
-                            }
-                            
+                            const { error: upErr } = await supabase.from('visit_reports').update(reportPayload).eq('id', lastVisit.id);
+                            if (upErr) throw new Error("Erreur BDD maj visite : " + upErr.message);
                         } else {
-                            // CAS B : Pas d'entrée trouvée, création orpheline
-                            console.log("⚠️ Sortie sans entrée détectée : Création d'un rapport de visite orphelin.");
-                            
                             reportPayload.employee_id = id;
                             reportPayload.check_in_time = eventTime; 
                             reportPayload.location_name = detectedLoc.name;
                             reportPayload.location_id = (detectedLoc.table === 'mobile_locations') ? detectedLoc.id : null;
                             reportPayload.duration_minutes = 1; 
                             
-                            // 👇 CORRECTION ICI : On capture et on jette l'erreur !
-                            const { error: visitInsertErr } = await supabase.from('visit_reports').insert([reportPayload]);
-                            if (visitInsertErr) {
-                                console.error("❌ ERREUR SUPABASE (INSERT VISITE):", visitInsertErr);
-                                throw new Error("Erreur BDD lors de la création du rapport orphelin : " + visitInsertErr.message);
-                            }
+                            const { error: insErr } = await supabase.from('visit_reports').insert([reportPayload]);
+                            if (insErr) throw new Error("Erreur BDD création rapport : " + insErr.message);
                         }
 
                         if (isFinalOut && schedule_id) {
                             await supabase.from('employee_schedules').update({ status: 'COMPLETED' }).eq('id', schedule_id);
                         }
                     }
-                    
-                    // RÈGLE D'OR : À la sortie, on repasse le texte en "Actif"
-                    await supabase.from('employees').update({ statut: 'Actif' }).eq('id', id);
                 }
+
+                // 4. MISE À JOUR STATUT EMPLOYÉ
+                const currentStatut = clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif';
+                await supabase.from('employees').update({ statut: currentStatut }).eq('id', id);
 
                 return res.json({ status: "success", zone: detectedLoc.name });
 
@@ -2143,10 +2123,10 @@ else if (action === 'list-roles') {
                 console.error("Crash global route clock:", err);
                 return res.status(500).json({ error: err.message });
             }
-        }
 
 
-           // ============================================================
+            
+// ============================================================
 // SOUMISSION DU BILAN JOURNALIER (AVEC CALCUL AUTO DU TEMPS)
 // ============================================================
 else if (action === 'submit-daily-report') {
@@ -4024,6 +4004,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
