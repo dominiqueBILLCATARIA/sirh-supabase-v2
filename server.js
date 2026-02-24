@@ -1707,51 +1707,63 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
 
 
 
-
-
-
-        // ============================================================
-        // 11. MISE À JOUR ADMINISTRATIVE (RÉSERVÉE ADMIN/RH) ✅
+      // ============================================================
+        // 11. MISE À JOUR ADMINISTRATIVE (LOGIQUE PARTIELLE) ✅
         // ============================================================
         else if (action === 'update') {
-    if (!checkPerm(req, 'can_see_employees')) { 
-        return res.status(403).json({ error: "Accès refusé à l'administration des profils" });
-    }
-            // On récupère les données envoyées par le formulaire de l'Admin
-            const { id, statut, role, dept, limit, start_date, force_init } = req.query;
-            const agent = req.query.agent;
-
-            console.log(`🛠️ Modification Admin pour ID ${id} par ${agent}`);
-
-            const manager_id = req.query.manager_id === "null" || req.query.manager_id === "" ? null : req.query.manager_id;
-            const scope = req.query.scope ? JSON.parse(req.query.scope) : null;
-            // Préparation des données de mise à jour
-            
-            const daysLimit = limit || '365';
-
-            const updates = {
-                statut: statut,
-                role: role,
-                departement: dept,
-                employee_type: req.query.employee_type, // <--- AJOUTE ÇA
-                poste: req.query.poste || undefined, // Optionnel
-                type_contrat: limit === '365' ? 'CDI' : (limit === '180' ? 'CDD' : 'Essai'),
-                date_embauche: start_date,
-                date_fin_contrat: getEndDate(start_date, daysLimit),
-                manager_id: manager_id,
-                management_scope: scope,
-                salaire_brut_fixe: parseFloat(req.query.salaire_brut_fixe) || 0,
-                indemnite_transport: parseFloat(req.query.indemnite_transport) || 0,
-                indemnite_logement: parseFloat(req.query.indemnite_logement) || 0
-            };
-
-            // Si "Forcer l'initialisation" est coché, on peut aussi reset le solde par exemple
-            if (force_init === 'true') {
-                updates.solde_conges = 25;
-                updates.contract_status = 'Non signé'; // On reset pour qu'il doive resigner
+            if (!checkPerm(req, 'can_see_employees')) { 
+                return res.status(403).json({ error: "Accès refusé à l'administration des profils" });
             }
 
-            // Mise à jour dans Supabase
+            const q = req.query; // Alias pour plus de clarté
+            const id = q.id;
+            const agent = q.agent;
+
+            console.log(`🛠️ Mise à jour partielle pour ID ${id} par ${agent}`);
+
+            // 1. On construit l'objet de mise à jour dynamiquement
+            let updates = {};
+
+            // Informations de base (seulement si présentes dans la requête)
+            if (q.statut) updates.statut = q.statut;
+            if (q.role) updates.role = q.role;
+            if (q.dept) updates.departement = q.dept;
+            if (q.employee_type) updates.employee_type = q.employee_type;
+            if (q.poste) updates.poste = q.poste;
+
+            // Gestion de la hiérarchie
+            if (q.manager_id !== undefined) {
+                updates.manager_id = (q.manager_id === "null" || q.manager_id === "") ? null : q.manager_id;
+            }
+            if (q.scope) {
+                try {
+                    updates.management_scope = JSON.parse(q.scope);
+                } catch (e) { console.error("Erreur parse scope"); }
+            }
+
+            // 2. LOGIQUE CONTRAT : Uniquement si demandé par le front-end
+            if (q.recalculate_contract === 'true') {
+                updates.date_embauche = q.start_date;
+                updates.type_contrat = q.limit === '365' ? 'CDI' : (q.limit === '180' ? 'CDD' : 'Essai');
+                
+                // On utilise la fonction de calcul de date de fin
+                if (typeof getEndDate === 'function') {
+                    updates.date_fin_contrat = getEndDate(q.start_date, q.limit);
+                }
+            }
+
+            // 3. FINANCES (On vérifie si la valeur est fournie)
+            if (q.salaire_brut_fixe !== undefined) updates.salaire_brut_fixe = parseFloat(q.salaire_brut_fixe) || 0;
+            if (q.indemnite_transport !== undefined) updates.indemnite_transport = parseFloat(q.indemnite_transport) || 0;
+            if (q.indemnite_logement !== undefined) updates.indemnite_logement = parseFloat(q.indemnite_logement) || 0;
+
+            // 4. RÉINITIALISATION FORCÉE
+            if (q.force_init === 'true') {
+                updates.solde_conges = 25;
+                updates.contract_status = 'Non signé';
+            }
+
+            // 5. Exécution de la mise à jour (Supabase n'écrase que les clés présentes dans 'updates')
             const { error } = await supabase
                 .from('employees')
                 .update(updates)
@@ -1762,18 +1774,15 @@ else if (action_type === 'ACCEPTER_EMBAUCHE') {
                 throw error;
             }
 
-            // Log d'audit pour la sécurité
+            // Log d'audit
             await supabase.from('logs').insert([{ 
                 agent: agent, 
                 action: 'MODIF_ADMIN_PROFIL', 
-                details: `Employé ${id} mis à jour (${statut}, ${role}, ${dept})` 
+                details: `Champs modifiés pour l'ID ${id} : ${Object.keys(updates).join(', ')}` 
             }]);
 
-            return res.json({ status: "success", message: "Profil mis à jour avec succès" });
+            return res.json({ status: "success", message: "Mise à jour effectuée." });
         }
-
-
-
 
 
 
@@ -3925,6 +3934,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
