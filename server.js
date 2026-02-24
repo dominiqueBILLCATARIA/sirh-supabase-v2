@@ -357,8 +357,7 @@ else if (action === 'read') {
         // 🛡️ PHASE 5 : SÉCURITÉ DES COLONNES SENSIBLES (SALAIRES)
         // ============================================================
         // Liste des colonnes autorisées pour tous
-        let columns = "id, nom, matricule, poste, departement, statut, photo_url, employee_type, date_embauche, type_contrat, solde_conges, hierarchy_path, management_scope, manager_id, date_naissance, email, telephone, adresse, contract_status, contrat_pdf_url, cv_url, id_card_url, diploma_url, attestation_url, lm_url";
-        
+        let columns = "id, nom, matricule, poste, departement, statut, role, photo_url, employee_type, date_embauche, type_contrat, solde_conges, hierarchy_path, management_scope, manager_id, date_naissance, email, telephone, adresse, contract_status, contrat_pdf_url, cv_url, id_card_url, diploma_url, attestation_url, lm_url";        
         // On ajoute les colonnes financières UNIQUEMENT si l'utilisateur a le droit "Paie"
         if (checkPerm(req, 'can_see_payroll')) {
             columns += ", salaire_brut_fixe, indemnite_transport, indemnite_logement";
@@ -3980,6 +3979,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
