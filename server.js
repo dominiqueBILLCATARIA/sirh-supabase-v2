@@ -2123,7 +2123,7 @@ else if (action === 'list-roles') {
                 console.error("Crash global route clock:", err);
                 return res.status(500).json({ error: err.message });
             }
-
+        }
 
             
 // ============================================================
@@ -2216,7 +2216,9 @@ else if (action === 'submit-daily-report') {
     }
 }
 
-        // ============================================================
+        // ========================
+    
+        ====================================
         // LECTURE DES RAPPORTS JOURNALIERS (POUR MANAGERS/RH) ✅
         // ============================================================
        else if (action === 'read-daily-reports') {
@@ -4004,6 +4006,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
