@@ -218,7 +218,7 @@ app.all('/api/:action', upload.any(), async (req, res) => {
             // Récupération de l'utilisateur et de son rôle
             const { data: user, error } = await supabase
                 .from('app_users')
-                .select('id, email, password, nom_complet, employees(id, role, photo_url, statut)') // <--- On récupère le statut ici
+                .select('id, email, password, nom_complet, employees(id, role, photo_url, statut, employee_type)') 
                 .eq('email', username)
                 .single();
 
@@ -3979,6 +3979,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
