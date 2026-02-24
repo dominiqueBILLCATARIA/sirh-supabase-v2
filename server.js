@@ -3810,6 +3810,52 @@ else if (action === 'get-dashboard-stats') {
 
 
 
+    // ============================================================
+        // ROUTE : SUPPRESSION DÉFINITIVE D'UN EMPLOYÉ
+        // ============================================================
+        else if (action === 'delete-employee') {
+            // Vérification stricte de la permission Admin
+            if (!checkPerm(req, 'can_delete_employees')) {
+                return res.status(403).json({ error: "Accès refusé : Seul l'administrateur peut supprimer un profil." });
+            }
+
+            const { id, agent } = req.body;
+
+            try {
+                // 1. Récupérer l'ID de l'utilisateur lié avant de supprimer l'employé
+                const { data: emp, error: fetchErr } = await supabase
+                    .from('employees')
+                    .select('user_associated_id, nom')
+                    .eq('id', id)
+                    .single();
+
+                if (fetchErr || !emp) throw new Error("Employé introuvable.");
+
+                // 2. Supprimer l'employé de la table 'employees'
+                // Note: Si tes clés étrangères sont en "CASCADE", cela supprimera ses pointages et congés automatiquement
+                const { error: delEmpErr } = await supabase.from('employees').delete().eq('id', id);
+                if (delEmpErr) throw delEmpErr;
+
+                // 3. Supprimer le compte d'accès dans 'app_users'
+                if (emp.user_associated_id) {
+                    await supabase.from('app_users').delete().eq('id', emp.user_associated_id);
+                }
+
+                // 4. Loguer l'action dans l'audit
+                await supabase.from('logs').insert([{
+                    agent: agent,
+                    action: 'SUPPRESSION_EMPLOYE',
+                    details: `Suppression définitive de ${emp.nom} (ID: ${id})`
+                }]);
+
+                return res.json({ status: "success" });
+
+            } catch (err) {
+                console.error("Erreur suppression:", err.message);
+                return res.status(500).json({ error: err.message });
+            }
+        }
+
 // ============================================================
 // JOB D'ARCHIVAGE AUTOMATIQUE (Maintenance Long Terme)
 // ============================================================
@@ -3934,6 +3980,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
