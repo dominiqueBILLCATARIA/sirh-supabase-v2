@@ -2061,20 +2061,26 @@ else if (action === 'list-roles') {
                 }]);
 
                 // --- 3. MISE À JOUR SYNCHRONISÉE DES STATUTS ---
+// --- 3. MISE À JOUR SYNCHRONISÉE DES STATUTS ---
                 if (clockAction === 'CLOCK_IN') {
                     if (isMobileAgent) {
                         if (schedule_id) await supabase.from('employee_schedules').update({ status: 'CHECKED_IN' }).eq('id', schedule_id);
-                        await supabase.from('visit_reports').insert([{
+                        
+                        // 👇 CORRECTION ICI
+                        const { error: inErr } = await supabase.from('visit_reports').insert([{
                             employee_id: id, check_in_time: eventTime, location_name: detectedLoc.name,
                             location_id: (detectedLoc.table === 'mobile_locations') ? detectedLoc.id : null,
                             schedule_ref_id: schedule_id || null
                         }]);
+                        if (inErr) {
+                            console.error("❌ ERREUR SUPABASE (INSERT CLOCK_IN):", inErr);
+                            throw new Error("Impossible d'ouvrir la visite : " + inErr.message);
+                        }
                     }
                     // Tout le monde passe en "En Poste" quand il entre
                     await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', id);
-                } 
+                }
         else {
-                    // CAS SORTIE (CLOCK_OUT)
                     if (isMobileAgent) {
                         // 1. On cherche une visite ouverte (cas normal)
                         const { data: lastVisit } = await supabase.from('visit_reports')
@@ -2086,30 +2092,40 @@ else if (action === 'list-roles') {
                             outcome: outcome || 'VU', 
                             notes: report || '', 
                             proof_url: proofUrl,
-                            duration_minutes: 0, // Sera recalculé si on a une entrée
+                            duration_minutes: 0, 
                             presented_products: typeof presentedProducts === 'string' ? JSON.parse(presentedProducts) : (presentedProducts || []),
                             prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
                             contact_nom_libre: contact_nom_libre || null
                         };
 
                         if (lastVisit) {
-                            // CAS A : On a trouvé l'entrée correspondante (Parfait)
+                            // CAS A : On a trouvé l'entrée correspondante
                             const duration = Math.round((eventTime - new Date(lastVisit.check_in_time)) / (1000 * 60));
                             reportPayload.duration_minutes = duration > 0 ? duration : 1;
                             
-                            await supabase.from('visit_reports').update(reportPayload).eq('id', lastVisit.id);
+                            // 👇 CORRECTION ICI : On capture et on jette l'erreur !
+                            const { error: visitUpdateErr } = await supabase.from('visit_reports').update(reportPayload).eq('id', lastVisit.id);
+                            if (visitUpdateErr) {
+                                console.error("❌ ERREUR SUPABASE (UPDATE VISITE):", visitUpdateErr);
+                                throw new Error("Erreur BDD lors de la sauvegarde du rapport : " + visitUpdateErr.message);
+                            }
+                            
                         } else {
-                            // CAS B (CORRECTION) : Pas d'entrée trouvée (Bug précédent ou oubli)
-                            // On CRÉE une visite "orpheline" pour ne pas perdre le rapport
+                            // CAS B : Pas d'entrée trouvée, création orpheline
                             console.log("⚠️ Sortie sans entrée détectée : Création d'un rapport de visite orphelin.");
                             
                             reportPayload.employee_id = id;
-                            reportPayload.check_in_time = eventTime; // On met la même heure que la sortie
+                            reportPayload.check_in_time = eventTime; 
                             reportPayload.location_name = detectedLoc.name;
                             reportPayload.location_id = (detectedLoc.table === 'mobile_locations') ? detectedLoc.id : null;
-                            reportPayload.duration_minutes = 1; // 1 min par défaut
+                            reportPayload.duration_minutes = 1; 
                             
-                            await supabase.from('visit_reports').insert([reportPayload]);
+                            // 👇 CORRECTION ICI : On capture et on jette l'erreur !
+                            const { error: visitInsertErr } = await supabase.from('visit_reports').insert([reportPayload]);
+                            if (visitInsertErr) {
+                                console.error("❌ ERREUR SUPABASE (INSERT VISITE):", visitInsertErr);
+                                throw new Error("Erreur BDD lors de la création du rapport orphelin : " + visitInsertErr.message);
+                            }
                         }
 
                         if (isFinalOut && schedule_id) {
@@ -4008,6 +4024,7 @@ else if (action === 'list-departments') {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 SERVEUR V2 SUPABASE PRÊT : Port ${PORT}`));  
+
 
 
 
